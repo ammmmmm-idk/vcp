@@ -6,7 +6,7 @@ from urllib.parse import urlparse, parse_qs, quote, unquote
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QFrame, QTextBrowser, QFileDialog, QApplication, QListWidget, QSplitter
+    QLineEdit, QFrame, QTextBrowser, QFileDialog, QApplication, QListWidget, QSplitter, QMessageBox
 )
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QCursor, QDesktopServices
@@ -466,6 +466,17 @@ class PortalWidget(QWidget):
 
     def launch_video_call(self):
         """Triggered when the user clicks 'Join Video Call'"""
+        # --- NEW: Prevent joining multiple calls at once ---
+        if hasattr(self, 'webrtc_thread') and self.webrtc_thread is not None:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                "Active Call",
+                "You are already in an active video call! Please hang up before joining another room."
+            )
+            return  # Stop here! Don't open a new window or start a new thread.
+        # ---------------------------------------------------
+
         print(f"🚀 Launching Video Call for room: {self.active_group_id}")
 
         # 1. Pop open the Video Grid UI
@@ -474,7 +485,7 @@ class PortalWidget(QWidget):
 
         # 2. Spin up the WebRTC Engine in the background
         self.webrtc_thread = WebRTCClientThread(
-            host='127.0.0.1',  # CHANGE THIS TO YOUR SERVER'S IPv4 IF TESTING ON 2 COMPUTERS!
+            host='127.0.0.1',  # <-- Restored to 127.0.0.1 (Change to your actual IPv4 if on 2 PCs!)
             port=8890,
             username=self.username,
             group_id=self.active_group_id,
@@ -484,7 +495,7 @@ class PortalWidget(QWidget):
         # 3. ACTUALLY START THE THREAD!
         self.webrtc_thread.start()
 
-        # 4. NEW LINK: Listen for the window closing (via the 'X' or Hang Up button)
+        # 4. Listen for the window closing (via the 'X' or Hang Up button)
         self.video_window.closed_signal.connect(self._stop_video_call)
 
     def _stop_video_call(self):
@@ -495,6 +506,16 @@ class PortalWidget(QWidget):
             self.webrtc_thread = None # Clears it out so we can start a new call later!
 
     def _open_video_window(self):
+        # --- NEW: Prevent joining multiple calls at once ---
+        if hasattr(self, 'webrtc_thread') and self.webrtc_thread is not None:
+            QMessageBox.warning(
+                self,
+                "Active Call",
+                "You are already in an active video call! Please hang up before joining another room."
+            )
+            return  # Stop here! Don't open a new window.
+        # ---------------------------------------------------
+
         print(f"Opening Video Window for Room: {self.active_group_name} ({self.active_group_id})")
 
         # 1. Pop open the UI
@@ -503,12 +524,15 @@ class PortalWidget(QWidget):
 
         # 2. Spin up the WebRTC Engine in the background
         self.webrtc_thread = WebRTCClientThread(
-            host='127.0.0.1',  # Or your server's IP if testing on two PCs
-            port=8890,
+            host='127.0.0.1',  # CHANGE THIS TO 192.168.X.X IF TESTING ON 2 COMPUTERS!
+            port=8890,  # The new Video Signaling Port!
             username=self.username,
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals
         )
 
-        # 3. CRITICAL: You must tell the thread to actually run!
+        # 3. ACTUALLY START THE THREAD!
         self.webrtc_thread.start()
+
+        # 4. Listen for the window closing (via the 'X' or Hang Up button)
+        self.video_window.closed_signal.connect(self._stop_video_call)

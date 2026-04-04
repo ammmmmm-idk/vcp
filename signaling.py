@@ -19,3 +19,8 @@ class TCPSignaling:
     async def receive_data(self) -> dict:
         """Uses your protocol.py to safely receive JSON."""
         return await receive_message(self.reader)
+
+    def close(self):
+        """NEW: Snaps the network pipe shut to instantly wake up sleeping threads."""
+        if self.writer:
+            self.writer.close()

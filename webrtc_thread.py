@@ -23,23 +23,24 @@ class WebRTCClientThread(QThread):
         self.loop.run_until_complete(self._network_task())
 
     async def _network_task(self):
-        signaling = TCPSignaling()
+        # 1. FIX: Save signaling to self so we can access it later!
+        self.signaling = TCPSignaling()
         try:
-            await signaling.connect(self.host, self.port)
+            await self.signaling.connect(self.host, self.port)
 
             # Initialize our multi-person P2P engine and give it the UI bridge
-            self.peer_manager = MultiPeerManager(signaling, self.username, self.signal_emitter)
+            self.peer_manager = MultiPeerManager(self.signaling, self.username, self.signal_emitter)
 
             # Tell the central server we joined
-            await signaling.send_data({
+            await self.signaling.send_data({
                 "type": "join",
                 "username": self.username,
-                "group_id": self.group_id  # FIX: Send the room ID to the switchboard
+                "group_id": self.group_id
             })
 
             # Listen for routing data forever
             while self.running:
-                message = await signaling.receive_data()
+                message = await self.signaling.receive_data()
                 if not message:
                     break
 
@@ -62,10 +63,15 @@ class WebRTCClientThread(QThread):
 
     def stop(self):
         self.running = False
-        # If the manager exists, safely schedule it to close the cameras/connections
-        if hasattr(self, 'peer_manager'):
-            import asyncio
-            asyncio.run_coroutine_threadsafe(self.peer_manager.close_all(), self.loop)
+
+        # Only execute thread cleanup if the loop is still active
+        if hasattr(self, 'loop') and self.loop.is_running():
+            if hasattr(self, 'peer_manager'):
+                import asyncio
+                asyncio.run_coroutine_threadsafe(self.peer_manager.close_all(), self.loop)
+
+            # FIX: Safely schedule the network socket to close inside the background loop
+            if hasattr(self, 'signaling'):
+                self.loop.call_soon_threadsafe(self.signaling.close)
 
         self.quit()
-        # We DO NOT call self.wait() here, as it will deadlock the UI!

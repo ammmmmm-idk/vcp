@@ -33,6 +33,22 @@ class MultiPeerManager:
                 print(f"📡 Routing video from {target_username} to UI...")
                 asyncio.ensure_future(display_stream(track, target_username, self.signal_emitter))
 
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            print(f"Connection state with {target_username}: {pc.connectionState}")
+            # If the network drops or they close their app, trigger the UI cleanup
+            if pc.connectionState in ["closed", "failed", "disconnected"]:
+                print(f"Peer {target_username} left! Removing their video frame.")
+
+                # FIX: Catch the error if the UI was already deleted
+                try:
+                    self.signal_emitter.peer_disconnected.emit(target_username)
+                except RuntimeError:
+                    pass
+
+                if target_username in self.peers:
+                    del self.peers[target_username]
+
         @pc.on("icecandidate")
         async def on_icecandidate(candidate):
             if candidate:
