@@ -466,7 +466,7 @@ class PortalWidget(QWidget):
 
     def launch_video_call(self):
         """Triggered when the user clicks 'Join Video Call'"""
-        # --- NEW: Prevent joining multiple calls at once ---
+        # --- Prevent joining multiple calls at once ---
         if hasattr(self, 'webrtc_thread') and self.webrtc_thread is not None:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(
@@ -474,8 +474,7 @@ class PortalWidget(QWidget):
                 "Active Call",
                 "You are already in an active video call! Please hang up before joining another room."
             )
-            return  # Stop here! Don't open a new window or start a new thread.
-        # ---------------------------------------------------
+            return
 
         print(f"🚀 Launching Video Call for room: {self.active_group_id}")
 
@@ -485,17 +484,24 @@ class PortalWidget(QWidget):
 
         # 2. Spin up the WebRTC Engine in the background
         self.webrtc_thread = WebRTCClientThread(
-            host='127.0.0.1',  # <-- Restored to 127.0.0.1 (Change to your actual IPv4 if on 2 PCs!)
+            host='127.0.0.1',  # (Change to your actual IPv4 if testing on 2 computers)
             port=8890,
             username=self.username,
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals
         )
 
-        # 3. ACTUALLY START THE THREAD!
+        # ---------------------------------------------------------
+        # THE FIX: Wire the UI to the Thread before it starts!
+        # ---------------------------------------------------------
+        self.video_window.signals.cam_toggled.connect(
+            lambda is_muted: self.webrtc_thread.set_cam_muted(is_muted)
+        )
+
+        # 3. Start the background thread
         self.webrtc_thread.start()
 
-        # 4. Listen for the window closing (via the 'X' or Hang Up button)
+        # 4. Listen for the window closing
         self.video_window.closed_signal.connect(self._stop_video_call)
 
     def _stop_video_call(self):
@@ -506,33 +512,25 @@ class PortalWidget(QWidget):
             self.webrtc_thread = None # Clears it out so we can start a new call later!
 
     def _open_video_window(self):
-        # --- NEW: Prevent joining multiple calls at once ---
-        if hasattr(self, 'webrtc_thread') and self.webrtc_thread is not None:
-            QMessageBox.warning(
-                self,
-                "Active Call",
-                "You are already in an active video call! Please hang up before joining another room."
-            )
-            return  # Stop here! Don't open a new window.
-        # ---------------------------------------------------
+        print(f"Opening Video Window for Room: {self.active_group_name}")
 
-        print(f"Opening Video Window for Room: {self.active_group_name} ({self.active_group_id})")
-
-        # 1. Pop open the UI
         self.video_window = VideoWindow(self.active_group_name)
         self.video_window.show()
 
-        # 2. Spin up the WebRTC Engine in the background
         self.webrtc_thread = WebRTCClientThread(
-            host='127.0.0.1',  # CHANGE THIS TO 192.168.X.X IF TESTING ON 2 COMPUTERS!
-            port=8890,  # The new Video Signaling Port!
+            host='127.0.0.1',
+            port=8890,
             username=self.username,
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals
         )
 
-        # 3. ACTUALLY START THE THREAD!
-        self.webrtc_thread.start()
+        # ---------------------------------------------------------
+        # THE FIX: Use a lambda to bypass the PyQt thread queue!
+        # ---------------------------------------------------------
+        self.video_window.signals.cam_toggled.connect(
+            lambda is_muted: self.webrtc_thread.set_cam_muted(is_muted)
+        )
 
-        # 4. Listen for the window closing (via the 'X' or Hang Up button)
+        self.webrtc_thread.start()
         self.video_window.closed_signal.connect(self._stop_video_call)

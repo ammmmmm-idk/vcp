@@ -8,6 +8,8 @@ from PyQt6.QtGui import QImage, QPixmap
 class VideoSignals(QObject):
     # The bridge from WebRTC to PyQt
     new_frame = pyqtSignal(str, QImage)
+    # NEW: True means muted/off, False means active/on
+    cam_toggled = pyqtSignal(bool)
 
 
 class VideoWindow(QWidget):
@@ -111,6 +113,9 @@ class VideoWindow(QWidget):
             self.btn_mic.setStyleSheet(self.btn_style_on)
 
     def _toggle_cam(self, checked):
+        # NEW: Shout down to the background thread that the state changed!
+        self.signals.cam_toggled.emit(checked)
+
         if checked:
             self.btn_cam.setText("🚫 Cam: Off")
             self.btn_cam.setStyleSheet(self.btn_style_off)

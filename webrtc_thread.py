@@ -75,3 +75,11 @@ class WebRTCClientThread(QThread):
                 self.loop.call_soon_threadsafe(self.signaling.close)
 
         self.quit()
+
+    def set_cam_muted(self, is_muted):
+        print(f"🧵 THREAD BRIDGE: Caught signal! Muted = {is_muted}")
+        if hasattr(self, 'peer_manager') and self.peer_manager:
+            self.peer_manager.set_camera_muted(is_muted)
+            print("✅ THREAD BRIDGE: Passed to PeerManager.")
+        else:
+            print("❌ THREAD BRIDGE FAILED: peer_manager does not exist!")
