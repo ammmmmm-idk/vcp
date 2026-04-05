@@ -1,25 +1,34 @@
-import smtplib
 import os
+import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from env_loader import load_env_file
 
-# --- CONFIGURATION ---
-SMTP_SERVER = os.getenv("VCP_SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("VCP_SMTP_PORT", "587"))
-SENDER_EMAIL = os.getenv("VCP_SENDER_EMAIL", "")
-SENDER_PASSWORD = os.getenv("VCP_SENDER_PASSWORD", "")
+
+def _smtp_config():
+    load_env_file()
+    return {
+        "server": os.getenv("VCP_SMTP_SERVER", "smtp.gmail.com"),
+        "port": int(os.getenv("VCP_SMTP_PORT", "587")),
+        "email": os.getenv("VCP_SENDER_EMAIL", ""),
+        "password": os.getenv("VCP_SENDER_PASSWORD", ""),
+    }
 
 
 def send_otp_email(target_email: str, otp_code: str):
     """Sends a real email containing the 6-digit OTP."""
     try:
-        if not SENDER_EMAIL or not SENDER_PASSWORD:
-            print("[-] Missing SMTP credentials. Set VCP_SENDER_EMAIL and VCP_SENDER_PASSWORD.")
+        smtp_config = _smtp_config()
+        sender_email = smtp_config["email"]
+        sender_password = smtp_config["password"]
+
+        if not sender_email or not sender_password:
+            print("[-] Missing SMTP credentials. Fill VCP_SENDER_EMAIL and VCP_SENDER_PASSWORD in .env.")
             return False
 
         # 1. Create the email container
         message = MIMEMultipart()
-        message["From"] = f"VCP Security <{SENDER_EMAIL}>"
+        message["From"] = f"VCP Security <{sender_email}>"
         message["To"] = target_email
         message["Subject"] = "Your VCP Verification Code"
 
@@ -41,9 +50,9 @@ def send_otp_email(target_email: str, otp_code: str):
         message.attach(MIMEText(html_body, "html"))
 
         # 3. Connect to Server and Send
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(smtp_config["server"], smtp_config["port"]) as server:
             server.starttls()  # Secure the connection
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.login(sender_email, sender_password)
             server.send_message(message)
 
         print(f"[+] Email successfully sent to {target_email}")

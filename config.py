@@ -1,10 +1,17 @@
-SERVER_HOST = "127.0.0.1"
+import os
+
+from env_loader import load_env_file
+
+
+load_env_file()
+
+SERVER_HOST = os.getenv("VCP_SERVER_HOST", "127.0.0.1")
 
 CHAT_PORT = 8888
 FILE_PORT = 8889
 VIDEO_SIGNALING_PORT = 8890
 
-SERVER_BIND_HOST = "0.0.0.0"
+SERVER_BIND_HOST = os.getenv("VCP_SERVER_BIND_HOST", "0.0.0.0")
 
 MAX_MESSAGE_LENGTH = 2000
 MAX_GROUP_NAME_LENGTH = 80

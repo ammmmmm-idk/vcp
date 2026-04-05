@@ -38,6 +38,7 @@ class PortalWidget(QWidget):
         self.active_group_id = None
         self.active_group_name = "Lobby"
         self.pending_messages = {}
+        self._connecting_group_id = None
 
         self._setup_ui()
 
@@ -265,7 +266,11 @@ class PortalWidget(QWidget):
             self.user_list_widget.addItems(usernames)
 
     def _handle_network_status(self, status_type: str, msg: str):
+        if status_type == "success":
+            self._connecting_group_id = None
+            return
         if status_type == "error":
+            self._connecting_group_id = None
             self._mark_pending_messages_failed(msg)
             self._show_error(msg)
 
@@ -398,7 +403,8 @@ class PortalWidget(QWidget):
             print("Link copied to clipboard silently.")
 
     def _switch_group(self, group_id, force=False):
-        if not force and self.active_group_id == group_id: return
+        if not force and (self.active_group_id == group_id or self._connecting_group_id == group_id):
+            return
 
         self.active_group_id = group_id
         self.active_group_name = self.groups_data.get(group_id, "Unknown") if group_id != "Groq AI" else "Groq AI"
@@ -416,11 +422,13 @@ class PortalWidget(QWidget):
 
         if group_id != "Groq AI":
             self.btn_join_video.show()
+            self._connecting_group_id = group_id
             asyncio.create_task(self.net_client.connect_to_group(
                 group_id, self.active_group_name, self.username, self.pending_email, self.session_token
             ))
         else:
             self.btn_join_video.hide()
+            self._connecting_group_id = None
             self.net_client.disconnect()
 
     def _update_sidebar_ui(self):
