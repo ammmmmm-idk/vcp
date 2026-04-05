@@ -124,6 +124,15 @@ class MultiPeerManager:
             )
             await self.peers[sender_username].addIceCandidate(candidate)
 
+    async def handle_peer_left(self, sender_username):
+        pc = self.peers.pop(sender_username, None)
+        if pc:
+            await pc.close()
+        try:
+            self.signal_emitter.peer_disconnected.emit(sender_username)
+        except RuntimeError:
+            pass
+
     async def close_all(self):
         for username, pc in list(self.peers.items()):
             await pc.close()

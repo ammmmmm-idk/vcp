@@ -54,6 +54,8 @@ class WebRTCClientThread(QThread):
                     await self.peer_manager.handle_incoming_answer(message['sender'], message['sdp'])
                 elif msg_type == 'candidate':
                     await self.peer_manager.handle_ice_candidate(message['sender'], message['candidate'])
+                elif msg_type == 'peer_left':
+                    await self.peer_manager.handle_peer_left(message['username'])
 
         except Exception as e:
             print(f"WebRTC Thread disconnected: {e}")

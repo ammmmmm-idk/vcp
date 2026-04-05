@@ -32,6 +32,7 @@ RATE_LIMIT_WINDOW_SECONDS = 10
 RATE_LIMIT_ACTIONS = 8
 pending_signups: Dict[str, dict] = {}
 pending_logins: Dict[str, dict] = {}
+authenticated_connections: Dict[str, asyncio.StreamWriter] = {}
 
 
 async def send_error(writer: asyncio.StreamWriter, message: str):
@@ -235,6 +236,20 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     "email": user["email"],
                     "fullname": user["fullname"]
                 }
+                existing_writer = authenticated_connections.get(authenticated_user["email"])
+                if existing_writer and existing_writer is not writer:
+                    try:
+                        await protocol.send_message(existing_writer, {
+                            "action": "error",
+                            "message": "This account was logged in from another session."
+                        })
+                    except Exception:
+                        pass
+                    try:
+                        existing_writer.close()
+                    except Exception:
+                        pass
+                authenticated_connections[authenticated_user["email"]] = writer
                 logger.info("auth_success peer=%s email=%s fullname=%s", peer, authenticated_user["email"], authenticated_user["fullname"])
                 await protocol.send_message(writer, {
                     "action": "auth_ack",
@@ -461,6 +476,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             logger.info("room_leave peer=%s room=%s", peer, current_group_id)
             await broadcast_user_list(current_group_id)
         action_timestamps.pop(writer, None)
+        if authenticated_user and authenticated_connections.get(authenticated_user["email"]) is writer:
+            authenticated_connections.pop(authenticated_user["email"], None)
 
         try:
 

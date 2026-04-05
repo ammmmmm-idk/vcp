@@ -10,6 +10,7 @@ class VideoSignals(QObject):
     new_frame = pyqtSignal(str, QImage)
     # NEW: True means muted/off, False means active/on
     cam_toggled = pyqtSignal(bool)
+    peer_disconnected = pyqtSignal(str)
 
 
 class VideoWindow(QWidget):
@@ -25,8 +26,10 @@ class VideoWindow(QWidget):
 
         self.signals = VideoSignals()
         self.signals.new_frame.connect(self.update_video_feed)
+        self.signals.peer_disconnected.connect(self.remove_video_feed)
 
         self.video_labels = {}
+        self.video_containers = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -124,7 +127,8 @@ class VideoWindow(QWidget):
             self.btn_cam.setStyleSheet(self.btn_style_on)
 
     def add_video_feed(self, username):
-        container = QVBoxLayout()
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
 
         label = QLabel()
         label.setStyleSheet("background-color: #000000; border: 2px solid #4A5568; border-radius: 10px;")
@@ -135,15 +139,16 @@ class VideoWindow(QWidget):
         name_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
         name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        container.addWidget(label)
-        container.addWidget(name_label)
+        container_layout.addWidget(label)
+        container_layout.addWidget(name_label)
 
         self.video_labels[username] = label
+        self.video_containers[username] = container
 
         count = len(self.video_labels) - 1
         row = count // 2
         col = count % 2
-        self.grid_layout.addLayout(container, row, col)
+        self.grid_layout.addWidget(container, row, col)
 
     @pyqtSlot(str, QImage)
     def update_video_feed(self, username, qt_image):
@@ -156,6 +161,16 @@ class VideoWindow(QWidget):
             Qt.TransformationMode.SmoothTransformation
         )
         self.video_labels[username].setPixmap(QPixmap.fromImage(scaled_image))
+
+    @pyqtSlot(str)
+    def remove_video_feed(self, username):
+        label = self.video_labels.pop(username, None)
+        container = self.video_containers.pop(username, None)
+        if label is not None:
+            label.clear()
+        if container is not None:
+            self.grid_layout.removeWidget(container)
+            container.deleteLater()
 
     def closeEvent(self, event):
         """Override the standard window close 'X' to ensure we emit our network cleanup signal."""

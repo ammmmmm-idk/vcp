@@ -60,6 +60,14 @@ async def handle_video_signaling(reader, writer):
         # Cleanup when a user hangs up or disconnects
         if group_id and username in video_rooms.get(group_id, {}):
             del video_rooms[group_id][username]
+            for other_writer in list(video_rooms.get(group_id, {}).values()):
+                try:
+                    await send_message(other_writer, {
+                        "type": "peer_left",
+                        "username": username,
+                    })
+                except Exception:
+                    pass
             # If room is empty, delete the room
             if not video_rooms[group_id]:
                 del video_rooms[group_id]
