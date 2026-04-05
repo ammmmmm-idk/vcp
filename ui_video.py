@@ -1,6 +1,7 @@
 # Save as: ui_video.py
+import math
 import numpy as np
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGridLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGridLayout, QSizePolicy
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot, QObject
 from PyQt6.QtGui import QImage, QPixmap
 
@@ -30,6 +31,7 @@ class VideoWindow(QWidget):
 
         self.video_labels = {}
         self.video_containers = {}
+        self.video_order = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -46,7 +48,9 @@ class VideoWindow(QWidget):
         video_layout.setContentsMargins(10, 10, 10, 10)
 
         self.grid_layout = QGridLayout()
-        video_layout.addLayout(self.grid_layout)
+        self.grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.grid_layout.setSpacing(12)
+        video_layout.addLayout(self.grid_layout, 1)
 
         # Add the video container to main layout and give it a stretch factor of 1
         # so it pushes the toolbar to the very bottom.
@@ -127,28 +131,34 @@ class VideoWindow(QWidget):
             self.btn_cam.setStyleSheet(self.btn_style_on)
 
     def add_video_feed(self, username):
+        if username in self.video_containers:
+            return
+
         container = QWidget()
         container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        container_layout.setSpacing(8)
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        container.setMinimumSize(0, 0)
 
         label = QLabel()
         label.setStyleSheet("background-color: #000000; border: 2px solid #4A5568; border-radius: 10px;")
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setMinimumSize(320, 240)
+        label.setMinimumSize(0, 0)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         name_label = QLabel(username)
         name_label.setStyleSheet("color: white; font-weight: bold; font-size: 14px;")
         name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
-        container_layout.addWidget(label)
+        container_layout.addWidget(label, 1)
         container_layout.addWidget(name_label)
 
         self.video_labels[username] = label
         self.video_containers[username] = container
-
-        count = len(self.video_labels) - 1
-        row = count // 2
-        col = count % 2
-        self.grid_layout.addWidget(container, row, col)
+        self.video_order.append(username)
+        self._relayout_video_grid()
 
     @pyqtSlot(str, QImage)
     def update_video_feed(self, username, qt_image):
@@ -166,11 +176,42 @@ class VideoWindow(QWidget):
     def remove_video_feed(self, username):
         label = self.video_labels.pop(username, None)
         container = self.video_containers.pop(username, None)
+        if username in self.video_order:
+            self.video_order.remove(username)
         if label is not None:
             label.clear()
         if container is not None:
             self.grid_layout.removeWidget(container)
+            container.setParent(None)
             container.deleteLater()
+        self._relayout_video_grid()
+
+    def _relayout_video_grid(self):
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+        count = len(self.video_order)
+        if count == 0:
+            return
+
+        columns = math.ceil(math.sqrt(count))
+        rows = math.ceil(count / columns)
+
+        for row in range(rows):
+            self.grid_layout.setRowStretch(row, 1)
+        for col in range(columns):
+            self.grid_layout.setColumnStretch(col, 1)
+
+        for index, username in enumerate(self.video_order):
+            container = self.video_containers.get(username)
+            if container is None:
+                continue
+            row = index // columns
+            col = index % columns
+            self.grid_layout.addWidget(container, row, col)
 
     def closeEvent(self, event):
         """Override the standard window close 'X' to ensure we emit our network cleanup signal."""

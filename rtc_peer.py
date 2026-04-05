@@ -1,6 +1,7 @@
 # Save as: rtc_peer.py
 import asyncio
 from aiortc import RTCPeerConnection, RTCSessionDescription, RTCConfiguration, RTCIceServer
+from aiortc.contrib.media import MediaRelay
 from media_engine import CameraStreamTrack, display_stream
 from protocol import filter_sdp_for_h264
 
@@ -14,6 +15,7 @@ class MultiPeerManager:
 
         # Turn on the real webcam and give it the UI bridge!
         self.local_video_track = CameraStreamTrack(self.local_username, self.signal_emitter)
+        self.media_relay = MediaRelay()
 
         self.rtc_config = RTCConfiguration(
             iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")]
@@ -30,7 +32,7 @@ class MultiPeerManager:
     async def create_peer_connection(self, target_username):
         pc = RTCPeerConnection(configuration=self.rtc_config)
         self.peers[target_username] = pc
-        pc.addTrack(self.local_video_track)
+        pc.addTrack(self.media_relay.subscribe(self.local_video_track))
 
         @pc.on("track")
         def on_track(track):
