@@ -28,11 +28,11 @@ class VCPApp(QMainWindow):
         self.portal_widget = PortalWidget(net_client, parent=self)
         self.main_stack.addWidget(self.portal_widget)
 
-    def _on_auth_success(self, username, email, db_groups):
+    def _on_auth_success(self, username, email, db_groups, session_token):
         """When Login finishes, pass user info to the Portal and switch screens!"""
 
         # Give the Portal the database data it needs to setup the UI
-        self.portal_widget.initialize_user(username, email, db_groups)
+        self.portal_widget.initialize_user(username, email, db_groups, session_token)
 
         # Flip the page to the Main Dashboard
         self.main_stack.setCurrentIndex(1)

@@ -2,24 +2,25 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QLabel,
-    QLineEdit, QPushButton, QStackedWidget
+    QLineEdit, QPushButton, QStackedWidget, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from qasync import asyncSlot
 
-# Database and Auth logic is now completely contained here
-from database import create_user, get_user_by_email, get_user_groups
-from auth_service import hash_password, verify_password, generate_and_send_otp, validate_otp
+import asyncio
+import protocol
+from config import SERVER_HOST, CHAT_PORT
 
 
 class AuthWidget(QWidget):
     # This signal acts as a bridge. When verified, it sends (username, email, saved_groups) back to Gui.py
-    auth_successful = pyqtSignal(str, str, list)
+    auth_successful = pyqtSignal(str, str, list, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.username = "User"
         self.pending_email = None
+        self.pending_flow = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -126,34 +127,50 @@ class AuthWidget(QWidget):
         email = self.reg_email.text().strip().lower()
         password = self.reg_pass.text().strip()
 
-        if not fullname or not email or not password: return
-        hashed_pw = hash_password(password)
-        success = await create_user(fullname, email, hashed_pw)
-
-        if not success:
-            print("Error: Email already registered!")
+        if not fullname or not email or not password:
+            QMessageBox.warning(self, "Missing Fields", "Please fill in your full name, email, and password.")
+            return
+        response = await self._send_auth_request({
+            "action": "signup",
+            "fullname": fullname,
+            "email": email,
+            "password": password,
+        })
+        if not response:
+            QMessageBox.critical(self, "Connection Error", "Could not reach the authentication server.")
+            return
+        if response.get("action") == "error":
+            QMessageBox.warning(self, "Sign Up Failed", response.get("message", "Signup failed."))
             return
 
+        self.auth_stack.setCurrentIndex(2)
         self.pending_email = email
         self.username = fullname
-        await generate_and_send_otp(email)
-        self.auth_stack.setCurrentIndex(2)
+        self.pending_flow = "signup"
 
     @asyncSlot()
     async def _handle_login(self):
         email = self.login_user.text().strip().lower()
         password = self.login_pass.text().strip()
 
-        if not email or not password: return
-        user = await get_user_by_email(email)
+        if not email or not password:
+            QMessageBox.warning(self, "Missing Fields", "Please enter your email and password.")
+            return
+        response = await self._send_auth_request({
+            "action": "login",
+            "email": email,
+            "password": password,
+        })
+        if not response:
+            QMessageBox.critical(self, "Connection Error", "Could not reach the authentication server.")
+            return
+        if response.get("action") == "error":
+            QMessageBox.warning(self, "Login Failed", response.get("message", "Login failed."))
+            return
 
-        if user and verify_password(user["password_hash"], password):
-            self.pending_email = email
-            self.username = user["fullname"]
-            await generate_and_send_otp(email)
-            self.auth_stack.setCurrentIndex(2)
-        else:
-            print("Error: Invalid email or password.")
+        self.pending_email = email
+        self.pending_flow = "login"
+        self.auth_stack.setCurrentIndex(2)
 
     @asyncSlot()
     async def _handle_verify(self):
@@ -163,12 +180,32 @@ class AuthWidget(QWidget):
             self.auth_stack.setCurrentIndex(0)
             return
 
-        is_valid, msg = validate_otp(email, code)
-        if is_valid:
-            print("Authentication Successful!")
-            # Load user's saved groups from the DB
-            db_groups = await get_user_groups(email)
-            # EMIT THE SIGNAL TO THE MAIN APP!
-            self.auth_successful.emit(self.username, email, db_groups)
-        else:
-            print(f"Verification Failed: {msg}")
+        response = await self._send_auth_request({
+            "action": "verify_auth_code",
+            "email": email,
+            "code": code,
+        })
+        if not response:
+            QMessageBox.critical(self, "Connection Error", "Could not reach the authentication server.")
+            return
+        if response.get("action") == "error":
+            QMessageBox.warning(self, "Verification Failed", response.get("message", "Verification failed."))
+            return
+
+        self.username = response.get("username", self.username)
+        db_groups = response.get("groups", [])
+        session_token = response.get("session_token", "")
+        self.auth_successful.emit(self.username, email, db_groups, session_token)
+
+    async def _send_auth_request(self, payload: dict):
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection(SERVER_HOST, CHAT_PORT)
+            await protocol.send_message(writer, payload)
+            return await protocol.receive_message(reader)
+        except Exception:
+            return None
+        finally:
+            if writer:
+                writer.close()
+                await writer.wait_closed()

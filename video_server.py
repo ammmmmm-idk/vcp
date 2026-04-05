@@ -1,6 +1,7 @@
 # Save as: video_server.py
 import asyncio
 from protocol import receive_message, send_message
+from config import SERVER_BIND_HOST, VIDEO_SIGNALING_PORT
 
 # Dictionary to hold active video connections:
 # Format: { "group_id": { "username": writer_object } }
@@ -67,7 +68,7 @@ async def handle_video_signaling(reader, writer):
 
 async def main():
     print("🎥 Launching Video Signaling Server on Port 8890...")
-    server = await asyncio.start_server(handle_video_signaling, '0.0.0.0', 8890)
+    server = await asyncio.start_server(handle_video_signaling, SERVER_BIND_HOST, VIDEO_SIGNALING_PORT)
     async with server:
         await server.serve_forever()
 

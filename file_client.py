@@ -1,10 +1,12 @@
 import asyncio
 import os
 import protocol
+from attachment_security import validate_attachment_filename
+from config import MAX_UPLOAD_FILE_SIZE, SERVER_HOST, FILE_PORT
 
 # --- CONFIGURATION ---
-HOST = '127.0.0.1'
-PORT = 8889
+HOST = SERVER_HOST
+PORT = FILE_PORT
 CACHE_DIR = "VCP_Cache"  # The hidden local folder for default downloads
 CHUNK_SIZE = 8192  # 8 Kilobytes
 
@@ -21,6 +23,15 @@ async def upload_file(file_path: str) -> bool:
     filename = os.path.basename(file_path)
     filesize = os.path.getsize(file_path)
     writer = None
+
+    is_valid, error_message = validate_attachment_filename(filename)
+    if not is_valid:
+        print(f"[-] Invalid file name: {error_message}")
+        return False
+
+    if filesize > MAX_UPLOAD_FILE_SIZE:
+        print(f"[-] File too large: {filename}")
+        return False
 
     try:
         reader, writer = await asyncio.open_connection(HOST, PORT)
@@ -58,6 +69,10 @@ async def download_file(filename: str, destination: str = None) -> str:
     Otherwise, it saves to VCP_Cache.
     """
     safe_filename = os.path.basename(filename)
+    is_valid, error_message = validate_attachment_filename(safe_filename)
+    if not is_valid:
+        print(f"[-] Invalid download file name: {error_message}")
+        return None
 
     # Decide where we are saving this
     if destination:

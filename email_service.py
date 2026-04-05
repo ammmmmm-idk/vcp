@@ -1,17 +1,22 @@
 import smtplib
+import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # --- CONFIGURATION ---
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = "v1deoca11proj3ct@gmail.com"  # Replace with your email
-SENDER_PASSWORD = "bovx ynah dcwm eipt"  # Replace with your App Password
+SMTP_SERVER = os.getenv("VCP_SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("VCP_SMTP_PORT", "587"))
+SENDER_EMAIL = os.getenv("VCP_SENDER_EMAIL", "")
+SENDER_PASSWORD = os.getenv("VCP_SENDER_PASSWORD", "")
 
 
 def send_otp_email(target_email: str, otp_code: str):
     """Sends a real email containing the 6-digit OTP."""
     try:
+        if not SENDER_EMAIL or not SENDER_PASSWORD:
+            print("[-] Missing SMTP credentials. Set VCP_SENDER_EMAIL and VCP_SENDER_PASSWORD.")
+            return False
+
         # 1. Create the email container
         message = MIMEMultipart()
         message["From"] = f"VCP Security <{SENDER_EMAIL}>"

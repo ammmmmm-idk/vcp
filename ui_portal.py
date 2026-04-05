@@ -1,6 +1,7 @@
 # Save as: ui_portal.py
 import os
 import asyncio
+import html
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, quote, unquote
 
@@ -12,11 +13,12 @@ from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QCursor, QDesktopServices
 from qasync import asyncSlot
 
-from database import create_or_update_group, add_user_to_group
 import file_client
+from attachment_security import validate_attachment_filename
 from ui_dialogs import FilterSelectionDialog, CreateGroupDialog, GroupManagementDialog
 from webrtc_thread import WebRTCClientThread
 from ui_video import VideoWindow
+from config import MAX_GROUP_NAME_LENGTH, MAX_UPLOAD_FILE_SIZE, SERVER_HOST, VIDEO_SIGNALING_PORT
 
 
 
@@ -29,24 +31,28 @@ class PortalWidget(QWidget):
 
         self.username = "User"
         self.pending_email = None
+        self.session_token = None
 
         self.group_buttons = {}
         self.groups_data = {"global-lobby-001": "Lobby"}
-        self.active_group_id = "global-lobby-001"
+        self.active_group_id = None
         self.active_group_name = "Lobby"
+        self.pending_messages = {}
 
         self._setup_ui()
 
-    def initialize_user(self, username, email, db_groups):
+    def initialize_user(self, username, email, db_groups, session_token):
         self.username = username
         self.pending_email = email
+        self.session_token = session_token
+        self.net_client.set_auth_context(email, session_token)
         for row in db_groups:
             gid = row["group_id"]
             gname = row["group_name"]
             if gid not in self.groups_data:
                 self.groups_data[gid] = gname
                 self._add_group_btn_ui(gid, gname)
-        self._switch_group("global-lobby-001")
+        self._switch_group("global-lobby-001", force=True)
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -235,6 +241,12 @@ class PortalWidget(QWidget):
             self._add_chat_msg(payload["sender"], payload["msg"], payload.get("color", "#E2E8F0"),
                                payload.get("timestamp", ""))
 
+        elif action == "message_ack":
+            self._handle_message_ack(payload.get("message_id"), payload.get("timestamp", ""))
+
+        elif action == "error":
+            self._show_error(payload.get("message", "Unknown server error."), popup=True)
+
         elif action == "rename":
             group_id = payload.get("group_id")
             new_name = payload.get("new_name")
@@ -254,7 +266,8 @@ class PortalWidget(QWidget):
 
     def _handle_network_status(self, status_type: str, msg: str):
         if status_type == "error":
-            self._add_chat_msg("System Error", msg, "#E53E3E")
+            self._mark_pending_messages_failed(msg)
+            self._show_error(msg)
 
     def _apply_rename(self, group_id, new_name):
         self.groups_data[group_id] = new_name
@@ -296,7 +309,15 @@ class PortalWidget(QWidget):
         if diag.exec():
             text = diag.name_in.text().strip()
             if text:
+                if not text.startswith("http") and len(text) > MAX_GROUP_NAME_LENGTH:
+                    self._show_error(
+                        f"Group name is too long. Maximum length is {MAX_GROUP_NAME_LENGTH} characters.",
+                        popup=True
+                    )
+                    return
                 asyncio.create_task(self._safe_async_group_action(text))
+            else:
+                self._show_error("Enter a group name or paste an invite link.", popup=True)
 
     async def _safe_async_group_action(self, text: str):
         try:
@@ -305,23 +326,41 @@ class PortalWidget(QWidget):
                 group_id = parsed.path.split("/")[-1]
                 query_params = parse_qs(parsed.query)
                 group_name = unquote(query_params.get("name", ["Shared Group"])[0])
+                if len(group_name) > MAX_GROUP_NAME_LENGTH:
+                    self._show_error(
+                        f"Group name is too long. Maximum length is {MAX_GROUP_NAME_LENGTH} characters.",
+                        popup=True
+                    )
+                    return
 
-                if group_id and group_id not in self.groups_data:
-                    self.groups_data[group_id] = group_name
-                    self._add_group_btn_ui(group_id, group_name)
-                    await create_or_update_group(group_id, group_name)
-                    await add_user_to_group(self.pending_email, group_id)
-
-                self._switch_group(group_id)
+                response = await self.net_client.request_group_action({
+                    "action": "join_group",
+                    "group_id": group_id,
+                })
+                if response and response.get("action") == "group_joined":
+                    joined_group = response.get("group", {})
+                    joined_id = joined_group.get("group_id", group_id)
+                    joined_name = joined_group.get("group_name", group_name)
+                    if joined_id and joined_id not in self.groups_data:
+                        self.groups_data[joined_id] = joined_name
+                        self._add_group_btn_ui(joined_id, joined_name)
+                    self._switch_group(joined_id)
             else:
-                import uuid
-                new_id = str(uuid.uuid4())
-                self.groups_data[new_id] = text
-                self._add_group_btn_ui(new_id, text)
-                await create_or_update_group(new_id, text)
-                await add_user_to_group(self.pending_email, new_id)
-                self._switch_group(new_id)
+                response = await self.net_client.request_group_action({
+                    "action": "create_group",
+                    "group_name": text,
+                })
+                if response and response.get("action") == "group_created":
+                    created_group = response.get("group", {})
+                    new_id = created_group.get("group_id")
+                    new_name = created_group.get("group_name", text)
+                    if new_id and new_id not in self.groups_data:
+                        self.groups_data[new_id] = new_name
+                        self._add_group_btn_ui(new_id, new_name)
+                    if new_id:
+                        self._switch_group(new_id)
         except Exception as e:
+            self._show_error(f"Failed to create or join group: {e}")
             import traceback
             print("\n🚨 ERROR WHILE CREATING GROUP:")
             traceback.print_exc()
@@ -332,21 +371,34 @@ class PortalWidget(QWidget):
 
     def _open_group_mgmt(self):
         if self.active_group_id == "Groq AI": return
+        if self.active_group_id == "global-lobby-001":
+            QMessageBox.information(self, "Lobby", "The Lobby is the default room and cannot be left.")
+            return
         diag = GroupManagementDialog(self.active_group_name, self._get_invite_link(), self)
         diag.group_renamed.connect(self._rename_active_group)
+        diag.group_left.connect(self._leave_active_group)
         diag.exec()
 
     def _rename_active_group(self, new_name):
+        new_name = new_name.strip()
+        if not new_name:
+            self._show_error("Group name cannot be empty.", popup=True)
+            return
+        if len(new_name) > MAX_GROUP_NAME_LENGTH:
+            self._show_error(
+                f"Group name is too long. Maximum length is {MAX_GROUP_NAME_LENGTH} characters.",
+                popup=True
+            )
+            return
         asyncio.create_task(self.net_client.send_rename(self.active_group_id, new_name))
-        self._apply_rename(self.active_group_id, new_name)
 
     def _copy_link(self):
         if self.active_group_id != "Groq AI":
             QApplication.clipboard().setText(self._get_invite_link())
             print("Link copied to clipboard silently.")
 
-    def _switch_group(self, group_id):
-        if self.active_group_id == group_id: return
+    def _switch_group(self, group_id, force=False):
+        if not force and self.active_group_id == group_id: return
 
         self.active_group_id = group_id
         self.active_group_name = self.groups_data.get(group_id, "Unknown") if group_id != "Groq AI" else "Groq AI"
@@ -364,9 +416,12 @@ class PortalWidget(QWidget):
 
         if group_id != "Groq AI":
             self.btn_join_video.show()
-            asyncio.create_task(self.net_client.connect_to_group(group_id, self.active_group_name, self.username))
+            asyncio.create_task(self.net_client.connect_to_group(
+                group_id, self.active_group_name, self.username, self.pending_email, self.session_token
+            ))
         else:
             self.btn_join_video.hide()
+            self.net_client.disconnect()
 
     def _update_sidebar_ui(self):
         if self.active_group_id == "Groq AI":
@@ -382,19 +437,34 @@ class PortalWidget(QWidget):
         if fname:
             local_time = datetime.now().strftime("%H:%M")
             filename = os.path.basename(fname)
+            is_valid, error_message = validate_attachment_filename(filename)
+            if not is_valid:
+                self._show_error(f"{error_message} The file will not be sent.", popup=True)
+                return
+            if os.path.getsize(fname) > MAX_UPLOAD_FILE_SIZE:
+                self._show_error(
+                    f"File is too large, so it will not be sent. Maximum size is {MAX_UPLOAD_FILE_SIZE // (1024 * 1024)} MB.",
+                    popup=True
+                )
+                return
             self._add_chat_msg("System", f"⏳ Uploading {filename}...", "#A0AEC0", local_time)
-            await self.net_client.send_file(self.username, fname)
+            upload_success = await self.net_client.send_file(self.username, fname)
+            if not upload_success:
+                self._add_chat_msg("System", f"{filename} upload failed.", "#E53E3E",
+                                   datetime.now().strftime("%H:%M"))
+                return
             await self.net_client.send_file_notification(self.username, filename)
             self._add_chat_msg("System", f"✅ {filename} uploaded successfully!", "#48BB78",
                                datetime.now().strftime("%H:%M"))
 
     async def _handle_file_message(self, sender: str, filename: str, color: str, timestamp: str):
         ext = os.path.splitext(filename)[1].lower()
+        safe_filename = html.escape(filename)
         if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
             local_path = await file_client.download_file(filename)
             if local_path:
                 file_uri = QUrl.fromLocalFile(local_path).toString()
-                html_msg = f'<br><img src="{file_uri}" width="200" style="border-radius: 8px;"><br><i>{filename}</i>'
+                html_msg = f'<br><img src="{file_uri}" width="200" style="border-radius: 8px;"><br><i>{safe_filename}</i>'
                 self._add_raw_html(sender, html_msg, color, timestamp)
             else:
                 self._add_chat_msg(sender, f"❌ [Failed to load image: {filename}]", "red", timestamp)
@@ -402,7 +472,7 @@ class PortalWidget(QWidget):
             icon = "🎥 Video" if ext in ['.mp4', '.mov', '.avi', '.mkv'] else "📄 File"
             file_html = f'''
             <div style="background-color:#2D3748; padding:10px; border-radius:5px; margin-top:5px; display:inline-block;">
-                <b>{icon}:</b> {filename}<br>
+                <b>{icon}:</b> {safe_filename}<br>
                 <a href="download://{filename}" style="color:#48BB78; text-decoration:none; font-weight:bold;">⬇️ Click here to Download & Open</a>
             </div>'''
             self._add_raw_html(sender, file_html, color, timestamp)
@@ -447,22 +517,63 @@ class PortalWidget(QWidget):
         txt = self.chat_input.text().strip()
         if txt:
             local_time = datetime.now().strftime("%H:%M")
-            self._add_chat_msg(self.username, txt, "#63B3ED", local_time)
             self.chat_input.clear()
             if self.active_group_id == "Groq AI":
                 self._add_chat_msg("Groq", f"I received: '{txt}'", "#9F7AEA", local_time)
             else:
-                await self.net_client.send_chat(sender=self.username, msg=txt)
+                message_id = await self.net_client.send_chat(sender=self.username, msg=txt)
+                if message_id:
+                    self.pending_messages[message_id] = {
+                        "group_id": self.active_group_id,
+                        "msg": txt
+                    }
+                    self._add_chat_msg(self.username, txt, "#63B3ED", local_time)
+                else:
+                    self._add_chat_msg("System Error", f"Failed to send: {txt}", "#E53E3E", local_time)
 
     def _add_chat_msg(self, sender, msg, color, timestamp=""):
-        time_str = f"<span style='color:#718096; font-size:10px;'>[{timestamp}]</span> " if timestamp else ""
-        self.chat_display.append(f"<p style='margin:5px;'>{time_str}<b style='color:{color};'>{sender}:</b> {msg}</p>")
+        display_time = self._format_timestamp(timestamp)
+        time_str = f"<span style='color:#718096; font-size:10px;'>[{display_time}]</span> " if display_time else ""
+        safe_sender = html.escape(str(sender))
+        safe_msg = html.escape(str(msg))
+        self.chat_display.append(f"<p style='margin:5px;'>{time_str}<b style='color:{color};'>{safe_sender}:</b> {safe_msg}</p>")
 
     def _add_raw_html(self, sender, html_content, color, timestamp=""):
-        time_str = f"<span style='color:#718096; font-size:10px;'>[{timestamp}]</span> " if timestamp else ""
-        self.chat_display.append(f"<p style='margin:5px;'>{time_str}<b style='color:{color};'>{sender}:</b></p>")
+        display_time = self._format_timestamp(timestamp)
+        time_str = f"<span style='color:#718096; font-size:10px;'>[{display_time}]</span> " if display_time else ""
+        safe_sender = html.escape(str(sender))
+        self.chat_display.append(f"<p style='margin:5px;'>{time_str}<b style='color:{color};'>{safe_sender}:</b></p>")
         self.chat_display.insertHtml(html_content)
         self.chat_display.append("<br>")
+
+    def _handle_message_ack(self, message_id, timestamp):
+        if not message_id:
+            return
+        self.pending_messages.pop(message_id, None)
+
+    def _mark_pending_messages_failed(self, error_message):
+        current_group_id = self.active_group_id
+        failed_ids = [
+            message_id for message_id, data in self.pending_messages.items()
+            if data["group_id"] == current_group_id
+        ]
+        for message_id in failed_ids:
+            data = self.pending_messages.pop(message_id)
+            self._add_chat_msg("System", f"Delivery failed: {data['msg']}", "#E53E3E", datetime.now().isoformat(timespec="seconds"))
+
+    def _show_error(self, message, popup=False):
+        if message:
+            self._add_chat_msg("System Error", message, "#E53E3E", datetime.now().isoformat(timespec="seconds"))
+            if popup:
+                QMessageBox.warning(self, "Error", message)
+
+    def _format_timestamp(self, timestamp):
+        if not timestamp:
+            return ""
+        try:
+            return datetime.fromisoformat(timestamp).strftime("%H:%M")
+        except ValueError:
+            return timestamp
 
     def launch_video_call(self):
         """Triggered when the user clicks 'Join Video Call'"""
@@ -484,8 +595,8 @@ class PortalWidget(QWidget):
 
         # 2. Spin up the WebRTC Engine in the background
         self.webrtc_thread = WebRTCClientThread(
-            host='127.0.0.1',  # (Change to your actual IPv4 if testing on 2 computers)
-            port=8890,
+            host=SERVER_HOST,
+            port=VIDEO_SIGNALING_PORT,
             username=self.username,
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals
@@ -518,8 +629,8 @@ class PortalWidget(QWidget):
         self.video_window.show()
 
         self.webrtc_thread = WebRTCClientThread(
-            host='127.0.0.1',
-            port=8890,
+            host=SERVER_HOST,
+            port=VIDEO_SIGNALING_PORT,
             username=self.username,
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals
@@ -534,3 +645,26 @@ class PortalWidget(QWidget):
 
         self.webrtc_thread.start()
         self.video_window.closed_signal.connect(self._stop_video_call)
+
+    def _leave_active_group(self):
+        asyncio.create_task(self._leave_group_async())
+
+    async def _leave_group_async(self):
+        group_id = self.active_group_id
+        if group_id in (None, "Groq AI", "global-lobby-001"):
+            return
+
+        response = await self.net_client.request_group_action({
+            "action": "leave_group",
+            "group_id": group_id,
+        })
+        if not response or response.get("action") != "group_left":
+            return
+
+        btn = self.group_buttons.pop(group_id, None)
+        if btn is not None:
+            btn.deleteLater()
+
+        self.groups_data.pop(group_id, None)
+        self._switch_group("global-lobby-001", force=True)
+        self._add_chat_msg("System", "You left the group.", "#A0AEC0", datetime.now().strftime("%H:%M"))

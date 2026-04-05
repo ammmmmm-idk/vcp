@@ -120,6 +120,7 @@ class FilterSelectionDialog(QDialog):
 
 class GroupManagementDialog(QDialog):
     group_renamed = pyqtSignal(str)
+    group_left = pyqtSignal()
 
     def __init__(self, current_name: str, invite_link: str, parent=None):
         super().__init__(parent)
@@ -158,6 +159,7 @@ class GroupManagementDialog(QDialog):
         layout.addStretch()
         leave_btn = QPushButton("Leave Current Group")
         leave_btn.setObjectName("DangerBtn")
+        leave_btn.clicked.connect(self._handle_leave)
         layout.addWidget(leave_btn)
 
         close_btn = QPushButton("Close")
@@ -173,3 +175,7 @@ class GroupManagementDialog(QDialog):
     def _copy_link(self):
         QApplication.clipboard().setText(self.invite_link_str)
         self.link_display.setText("Copied!")
+
+    def _handle_leave(self):
+        self.group_left.emit()
+        self.accept()

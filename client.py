@@ -1,16 +1,15 @@
 # Save as: client.py
 import sys
 import asyncio
+import uuid
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 from qasync import QEventLoop
 
 import protocol
-from database import init_db
 from Gui import VCPApp  # Import the View
-
 import file_client
-import os
+from config import SERVER_HOST, CHAT_PORT
 
 
 class NetworkClient(QObject):
@@ -24,21 +23,43 @@ class NetworkClient(QObject):
         self.reader = None
         self.writer = None
         self.listen_task = None
+        self.heartbeat_task = None
+        self.auth_email = None
+        self.session_token = None
+
+    def set_auth_context(self, email: str, session_token: str):
+        self.auth_email = email
+        self.session_token = session_token
 
     # Update this method signature and join_payload in client.py
-    async def connect_to_group(self, group_id: str, group_name: str, username: str, host: str = '192.168.50.33',
-                               port: int = 8888):
+    async def connect_to_group(self, group_id: str, group_name: str, username: str, email: str, session_token: str,
+                               host: str = SERVER_HOST,
+                               port: int = CHAT_PORT):
         self.disconnect()
 
         try:
             self.reader, self.writer = await asyncio.open_connection(host, port)
 
+            auth_payload = {
+                "action": "auth",
+                "email": email,
+                "session_token": session_token
+            }
+            await protocol.send_message(self.writer, auth_payload)
+            auth_response = await protocol.receive_message(self.reader)
+            if not auth_response or auth_response.get("action") != "auth_ack":
+                error_message = "Authentication with chat server failed."
+                if auth_response and auth_response.get("action") == "error":
+                    error_message = auth_response.get("message", error_message)
+                self.connection_status.emit("error", error_message)
+                self.disconnect()
+                return
+
             # Send BOTH the ID (for routing) and Name (for logging)
             join_payload = {
                 "action": "join",
                 "group_id": group_id,
-                "group_name": group_name,
-                "username": username
+                "group_name": group_name
             }
             await protocol.send_message(self.writer, join_payload)
 
@@ -68,13 +89,21 @@ class NetworkClient(QObject):
 
     async def send_chat(self, sender: str, msg: str, color: str = "#F6AD55"):
         if self.writer:
+            message_id = str(uuid.uuid4())
             payload = {
                 "action": "chat",
+                "message_id": message_id,
                 "sender": sender,
                 "msg": msg,
                 "color": color
             }
-            await protocol.send_message(self.writer, payload)
+            try:
+                await protocol.send_message(self.writer, payload)
+                return message_id
+            except Exception as e:
+                self.connection_status.emit("error", f"Failed to send message: {e}")
+                return None
+        return None
 
     async def send_file_notification(self, sender: str, filename: str):
         """Tells the main chat server that a file was successfully uploaded."""
@@ -100,6 +129,38 @@ class NetworkClient(QObject):
         success = await file_client.upload_file(file_path)
         if not success:
             self.connection_status.emit("error", "File upload failed.")
+        return success
+
+    async def request_group_action(self, payload: dict, host: str = SERVER_HOST, port: int = CHAT_PORT):
+        if not self.auth_email or not self.session_token:
+            self.connection_status.emit("error", "Authentication context is missing.")
+            return None
+
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            await protocol.send_message(writer, {
+                "action": "auth",
+                "email": self.auth_email,
+                "session_token": self.session_token,
+            })
+            auth_response = await protocol.receive_message(reader)
+            if not auth_response or auth_response.get("action") != "auth_ack":
+                self.connection_status.emit("error", "Authentication with chat server failed.")
+                return None
+
+            await protocol.send_message(writer, payload)
+            response = await protocol.receive_message(reader)
+            if response and response.get("action") == "error":
+                self.connection_status.emit("error", response.get("message", "Group action failed."))
+            return response
+        except Exception as e:
+            self.connection_status.emit("error", f"Group action failed: {e}")
+            return None
+        finally:
+            if writer:
+                writer.close()
+                await writer.wait_closed()
 
     async def _heartbeat_loop(self):
         """Sends a ping every 20s to prevent silent timeouts."""
@@ -114,8 +175,14 @@ class NetworkClient(QObject):
     def disconnect(self):
         if self.listen_task:
             self.listen_task.cancel()
+            self.listen_task = None
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
+            self.heartbeat_task = None
         if self.writer:
             self.writer.close()
+            self.writer = None
+        self.reader = None
 
 
 def main():
@@ -124,17 +191,14 @@ def main():
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
-    # 1. Initialize the Database
-    loop.run_until_complete(init_db())
-
-    # 2. Spin up the Network Manager (Controller)
+    # 1. Spin up the Network Manager (Controller)
     net_client = NetworkClient()
 
-    # 3. Spin up the GUI (View) and inject the Manager into it
+    # 2. Spin up the GUI (View) and inject the Manager into it
     window = VCPApp(net_client=net_client)
     window.show()
 
-    # 4. Hand over control to the async event loop
+    # 3. Hand over control to the async event loop
     with loop:
         loop.run_forever()
 
