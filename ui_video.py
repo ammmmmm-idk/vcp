@@ -10,6 +10,7 @@ class VideoSignals(QObject):
     # The bridge from WebRTC to PyQt
     new_frame = pyqtSignal(str, QImage)
     # NEW: True means muted/off, False means active/on
+    mic_toggled = pyqtSignal(bool)
     cam_toggled = pyqtSignal(bool)
     peer_disconnected = pyqtSignal(str)
 
@@ -112,6 +113,7 @@ class VideoWindow(QWidget):
 
     # --- UI Toggle Logic ---
     def _toggle_mic(self, checked):
+        self.signals.mic_toggled.emit(checked)
         if checked:
             self.btn_mic.setText("🔇 Mic: Off")
             self.btn_mic.setStyleSheet(self.btn_style_off)

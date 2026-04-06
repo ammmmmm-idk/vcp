@@ -1,29 +1,24 @@
-# Save as: media_engine.py
 import asyncio
+import fractions
+
 import cv2
 import numpy as np
+import sounddevice as sd
 from PyQt6.QtGui import QImage
-from aiortc import VideoStreamTrack
-from av import VideoFrame
+from aiortc import AudioStreamTrack, VideoStreamTrack
+from av import AudioFrame, VideoFrame
 
 
 class CameraStreamTrack(VideoStreamTrack):
-    """Captures frames independently and guarantees hardware release on crash."""
-
     def __init__(self, local_username, signal_emitter):
         super().__init__()
         self.kind = "video"
         self.local_username = local_username
         self.signal_emitter = signal_emitter
-
-        # THE FIX: Remove the underscore here!
         self.is_muted = False
-
         self._running = True
 
-        # Using DirectShow for the stable camera driver
         self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
@@ -31,49 +26,33 @@ class CameraStreamTrack(VideoStreamTrack):
         self._task = asyncio.create_task(self._camera_loop())
 
     async def _camera_loop(self):
-        """Runs instantly, and safely cleans up hardware in the 'finally' block."""
         try:
             while self._running:
-                # 1. ALWAYS read the camera so the hardware buffer stays empty
                 ret, frame = self.cap.read()
 
-                # 2. If muted, or if the camera glitched, overwrite it with a black box
                 if self.is_muted or not ret:
                     frame = np.zeros((480, 640, 3), dtype=np.uint8)
-
-                    # --- Paint the username on the black frame ---
                     text = f"{self.local_username} (Camera Off)"
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     font_scale = 1
                     thickness = 2
-                    color = (255, 255, 255)  # White text
-
-                    # Calculate the center of the frame so it looks perfectly aligned
+                    color = (255, 255, 255)
                     text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
                     text_x = (640 - text_size[0]) // 2
                     text_y = (480 + text_size[1]) // 2
-
-                    # Draw it onto the frame!
                     cv2.putText(frame, text, (text_x, text_y), font, font_scale, color, thickness, cv2.LINE_AA)
 
-                # 3. Convert to RGB for the Local PyQt UI
                 rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 h, w, ch = rgb_image.shape
                 bytes_per_line = ch * w
-
-                from PyQt6.QtGui import QImage
                 qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
 
-                # Send it to our own local UI
                 try:
                     self.signal_emitter.new_frame.emit(f"{self.local_username} (You)", qt_image)
                 except RuntimeError:
                     pass
 
-                # 4. THE FIX: Just pass the raw frame to the background queue!
-                # (Your recv() function will handle the WebRTC conversion automatically)
                 self._latest_frame = frame
-
                 await asyncio.sleep(1 / 15)
 
         except Exception as e:
@@ -97,23 +76,82 @@ class CameraStreamTrack(VideoStreamTrack):
         return new_frame
 
     def _release_camera(self):
-        """Safely releases the physical webcam hardware."""
-        if hasattr(self, 'cap') and self.cap is not None and self.cap.isOpened():
+        if self.cap is not None and self.cap.isOpened():
             self.cap.release()
             self.cap = None
             print("Webcam safely released from memory.")
 
     def stop(self):
         self._running = False
-        if hasattr(self, '_task'):
-            self._task.cancel()  # Force kill the zombie task!
+        if hasattr(self, "_task"):
+            self._task.cancel()
         self._release_camera()
         super().stop()
+
+
+class MicrophoneStreamTrack(AudioStreamTrack):
+    def __init__(self, sample_rate: int = 48000, channels: int = 1, block_size: int = 960):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.block_size = block_size
+        self.is_muted = False
+        self._running = True
+        self._pts = 0
+        self._loop = asyncio.get_running_loop()
+        self._queue = asyncio.Queue(maxsize=20)
+        self._stream = sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype="int16",
+            blocksize=self.block_size,
+            callback=self._audio_callback,
+        )
+        self._stream.start()
+
+    def _audio_callback(self, indata, frames, time_info, status):
+        if not self._running:
+            return
+        chunk = np.zeros_like(indata) if self.is_muted else indata.copy()
+        try:
+            self._loop.call_soon_threadsafe(self._enqueue_chunk, chunk)
+        except RuntimeError:
+            pass
+
+    def _enqueue_chunk(self, chunk):
+        if self._queue.full():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            pass
+
+    async def recv(self):
+        chunk = await self._queue.get()
+        if chunk.ndim == 1:
+            chunk = chunk.reshape(-1, 1)
+
+        layout = "mono" if self.channels == 1 else "stereo"
+        frame = AudioFrame.from_ndarray(chunk.T.copy(order="C"), format="s16", layout=layout)
+        frame.sample_rate = self.sample_rate
+        frame.pts = self._pts
+        frame.time_base = fractions.Fraction(1, self.sample_rate)
+        self._pts += chunk.shape[0]
+        return frame
+
+    def stop(self):
+        self._running = False
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
         super().stop()
 
 
 async def display_stream(track, target_username, signal_emitter):
-    """Consumes remote video tracks and shoots them over to PyQt!"""
     try:
         while True:
             frame = await track.recv()
@@ -122,24 +160,40 @@ async def display_stream(track, target_username, signal_emitter):
             rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb_image.shape
             bytes_per_line = ch * w
-
-            from PyQt6.QtGui import QImage
             qt_image = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
 
-            # FIX: Prevent crash if the UI window was already closed!
             try:
                 signal_emitter.new_frame.emit(target_username, qt_image)
             except RuntimeError:
-                break  # Stop trying to paint the UI
+                break
 
     except Exception as e:
         print(f"Video stream from {target_username} stopped: {e}")
 
-    @property
-    def is_muted(self):
-        return self._is_muted
 
-    @is_muted.setter
-    def is_muted(self, value):
-        print(f"🎥 CAMERA HARDWARE: Switch flipped! Muted = {value}")
-        self._is_muted = value
+async def display_audio_stream(track, target_username):
+    output_stream = None
+    try:
+        while True:
+            frame = await track.recv()
+            audio = frame.to_ndarray()
+            if audio.ndim == 1:
+                audio = audio.reshape(1, -1)
+            samples = audio.T.copy(order="C")
+            channels = samples.shape[1] if samples.ndim > 1 else 1
+
+            if output_stream is None:
+                output_stream = sd.OutputStream(
+                    samplerate=frame.sample_rate,
+                    channels=channels,
+                    dtype=str(samples.dtype),
+                )
+                output_stream.start()
+
+            output_stream.write(samples)
+    except Exception as e:
+        print(f"Audio stream from {target_username} stopped: {e}")
+    finally:
+        if output_stream is not None:
+            output_stream.stop()
+            output_stream.close()

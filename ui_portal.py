@@ -616,6 +616,9 @@ class PortalWidget(QWidget):
         self.video_window.signals.cam_toggled.connect(
             lambda is_muted: self.webrtc_thread.set_cam_muted(is_muted)
         )
+        self.video_window.signals.mic_toggled.connect(
+            lambda is_muted: self.webrtc_thread.set_mic_muted(is_muted)
+        )
 
         # 3. Start the background thread
         self.webrtc_thread.start()
@@ -649,6 +652,9 @@ class PortalWidget(QWidget):
         # ---------------------------------------------------------
         self.video_window.signals.cam_toggled.connect(
             lambda is_muted: self.webrtc_thread.set_cam_muted(is_muted)
+        )
+        self.video_window.signals.mic_toggled.connect(
+            lambda is_muted: self.webrtc_thread.set_mic_muted(is_muted)
         )
 
         self.webrtc_thread.start()
