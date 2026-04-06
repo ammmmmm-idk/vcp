@@ -1,5 +1,6 @@
 import asyncio
 import fractions
+import queue
 
 import cv2
 import numpy as np
@@ -7,6 +8,7 @@ import sounddevice as sd
 from PyQt6.QtGui import QImage
 from aiortc import AudioStreamTrack, VideoStreamTrack
 from av import AudioFrame, VideoFrame
+from av.audio.resampler import AudioResampler
 
 
 class CameraStreamTrack(VideoStreamTrack):
@@ -139,6 +141,7 @@ class MicrophoneStreamTrack(AudioStreamTrack):
         frame.sample_rate = self.sample_rate
         frame.pts = self._pts
         frame.time_base = fractions.Fraction(1, self.sample_rate)
+        frame.duration = self.block_size
         self._pts += chunk.shape[0]
         return frame
 
@@ -149,6 +152,66 @@ class MicrophoneStreamTrack(AudioStreamTrack):
             self._stream.close()
             self._stream = None
         super().stop()
+
+
+class AudioPlaybackBuffer:
+    def __init__(self, sample_rate: int = 48000, channels: int = 1, block_size: int = 960):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.block_size = block_size
+        self._queue = queue.Queue(maxsize=100)
+        self._stream = sd.OutputStream(
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype="int16",
+            blocksize=self.block_size,
+            callback=self._callback,
+        )
+        self._stream.start()
+
+    def _callback(self, outdata, frames, time_info, status):
+        try:
+            data = self._queue.get_nowait()
+        except queue.Empty:
+            outdata.fill(0)
+            return
+
+        if data.shape[0] < frames:
+            padded = np.zeros((frames, self.channels), dtype=np.int16)
+            padded[: data.shape[0], : data.shape[1]] = data
+            outdata[:] = padded
+        else:
+            outdata[:] = data[:frames]
+
+    def write(self, samples: np.ndarray):
+        if samples.ndim == 1:
+            samples = samples.reshape(-1, 1)
+
+        if samples.shape[1] != self.channels:
+            if samples.shape[1] > self.channels:
+                samples = samples[:, : self.channels]
+            else:
+                samples = np.repeat(samples, self.channels, axis=1)
+
+        if samples.dtype != np.int16:
+            samples = samples.astype(np.int16)
+
+        if self._queue.full():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+
+        try:
+            self._queue.put_nowait(samples.copy(order="C"))
+        except queue.Full:
+            pass
+
+    def stop(self):
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
 
 
 async def display_stream(track, target_username, signal_emitter):
@@ -172,28 +235,18 @@ async def display_stream(track, target_username, signal_emitter):
 
 
 async def display_audio_stream(track, target_username):
-    output_stream = None
+    player = AudioPlaybackBuffer(sample_rate=48000, channels=1, block_size=960)
+    resampler = AudioResampler(format="s16", layout="mono", rate=48000)
     try:
         while True:
             frame = await track.recv()
-            audio = frame.to_ndarray()
-            if audio.ndim == 1:
-                audio = audio.reshape(1, -1)
-            samples = audio.T.copy(order="C")
-            channels = samples.shape[1] if samples.ndim > 1 else 1
-
-            if output_stream is None:
-                output_stream = sd.OutputStream(
-                    samplerate=frame.sample_rate,
-                    channels=channels,
-                    dtype=str(samples.dtype),
-                )
-                output_stream.start()
-
-            output_stream.write(samples)
+            for resampled_frame in resampler.resample(frame):
+                audio = resampled_frame.to_ndarray()
+                if audio.ndim == 1:
+                    audio = audio.reshape(1, -1)
+                samples = audio.T.copy(order="C")
+                player.write(samples)
     except Exception as e:
         print(f"Audio stream from {target_username} stopped: {e}")
     finally:
-        if output_stream is not None:
-            output_stream.stop()
-            output_stream.close()
+        player.stop()
