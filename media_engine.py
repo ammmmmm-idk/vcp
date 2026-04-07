@@ -7,6 +7,7 @@ import numpy as np
 import sounddevice as sd
 from PyQt6.QtGui import QImage
 from aiortc import AudioStreamTrack, VideoStreamTrack
+from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, VideoFrame
 from av.audio.resampler import AudioResampler
 
@@ -102,6 +103,7 @@ class MicrophoneStreamTrack(AudioStreamTrack):
         self._pts = 0
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue(maxsize=20)
+        self._sentinel = object()
         self._stream = sd.InputStream(
             samplerate=self.sample_rate,
             channels=self.channels,
@@ -133,6 +135,8 @@ class MicrophoneStreamTrack(AudioStreamTrack):
 
     async def recv(self):
         chunk = await self._queue.get()
+        if chunk is self._sentinel:
+            raise MediaStreamError
         if chunk.ndim == 1:
             chunk = chunk.reshape(-1, 1)
 
@@ -147,6 +151,10 @@ class MicrophoneStreamTrack(AudioStreamTrack):
 
     def stop(self):
         self._running = False
+        try:
+            self._loop.call_soon_threadsafe(self._enqueue_chunk, self._sentinel)
+        except RuntimeError:
+            pass
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()

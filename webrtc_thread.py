@@ -61,12 +61,11 @@ class WebRTCClientThread(QThread):
         self.running = False
 
         if hasattr(self, "loop") and self.loop.is_running():
-            if hasattr(self, "peer_manager"):
-                asyncio.run_coroutine_threadsafe(self.peer_manager.close_all(), self.loop)
             if hasattr(self, "signaling"):
                 self.loop.call_soon_threadsafe(self.signaling.close)
 
         self.quit()
+        self.wait(3000)
 
     def set_cam_muted(self, is_muted):
         print(f"Camera bridge signal caught. Muted = {is_muted}")
