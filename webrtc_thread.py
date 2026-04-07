@@ -19,7 +19,16 @@ class WebRTCClientThread(QThread):
     def run(self):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._network_task())
+        try:
+            self.loop.run_until_complete(self._network_task())
+        finally:
+            pending = [task for task in asyncio.all_tasks(self.loop) if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+            self.loop.close()
 
     async def _network_task(self):
         self.signaling = TCPSignaling()
