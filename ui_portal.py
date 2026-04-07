@@ -44,6 +44,8 @@ class PortalWidget(QWidget):
         self.active_group_name = "Lobby"
         self.pending_messages = {}
         self._connecting_group_id = None
+        self.current_video_device_preferences = None
+        self.device_selection_dialog = None
 
         self._setup_ui()
 
@@ -683,10 +685,109 @@ class PortalWidget(QWidget):
         camera_devices = enumerate_camera_devices()
         microphone_devices = enumerate_audio_input_devices()
         speaker_devices = enumerate_audio_output_devices()
-        selection_dialog = DeviceSelectionDialog(camera_devices, microphone_devices, speaker_devices, self)
-        if not selection_dialog.exec():
+        device_preferences = {
+            "camera_device": None,
+            "microphone_device": None,
+            "speaker_device": None,
+        }
+        self.current_video_device_preferences = device_preferences.copy()
+        has_camera = bool(camera_devices)
+        has_microphone = bool(microphone_devices)
+        has_speakers = bool(speaker_devices)
+
+        if not has_camera and not has_microphone and not has_speakers:
+            QMessageBox.warning(
+                self,
+                "No Devices",
+                "No usable camera, microphone, or speakers are available for the call."
+            )
             return
 
+        missing_features = []
+        if not has_camera:
+            missing_features.append("camera")
+        if not has_microphone:
+            missing_features.append("microphone")
+        if not has_speakers:
+            missing_features.append("speakers")
+        if missing_features:
+            QMessageBox.information(
+                self,
+                "Partial Call",
+                "Starting the call without: " + ", ".join(missing_features) + ". Use Devices during the call to change hardware."
+            )
+
+        self.video_window = VideoWindow(
+            self.active_group_name,
+            has_camera=has_camera,
+            has_microphone=has_microphone,
+            has_speakers=has_speakers,
+        )
+        self.video_window.show()
+
+        self.webrtc_thread = WebRTCClientThread(
+            host=SERVER_HOST,
+            port=VIDEO_SIGNALING_PORT,
+            username=self.username,
+            group_id=self.active_group_id,
+            signal_emitter=self.video_window.signals,
+            device_preferences=device_preferences,
+        )
+        self._attach_video_window_handlers()
+
+        self.webrtc_thread.start()
+        self.video_window.closed_signal.connect(self._stop_video_call)
+
+    async def _leave_group_async(self):
+        group_id = self.active_group_id
+        if group_id in (None, "Groq AI", "global-lobby-001"):
+            return
+
+        response = await self.net_client.request_group_action({
+            "action": "leave_group",
+            "group_id": group_id,
+        })
+        if not response or response.get("action") != "group_left":
+            return
+
+        btn = self.group_buttons.pop(group_id, None)
+        if btn is not None:
+            btn.deleteLater()
+
+        self.groups_data.pop(group_id, None)
+        self._switch_group("global-lobby-001", force=True)
+        self._add_chat_msg("System", "You left the group.", "#A0AEC0", datetime.now().strftime("%H:%M"))
+
+    def _change_video_devices(self):
+        if not hasattr(self, "video_window") or self.video_window is None:
+            return
+
+        if self.device_selection_dialog is not None and self.device_selection_dialog.isVisible():
+            self.device_selection_dialog.raise_()
+            self.device_selection_dialog.activateWindow()
+            return
+
+        camera_devices = enumerate_camera_devices()
+        microphone_devices = enumerate_audio_input_devices()
+        speaker_devices = enumerate_audio_output_devices()
+        selection_dialog = DeviceSelectionDialog(camera_devices, microphone_devices, speaker_devices, self.video_window)
+        selection_dialog.setWindowModality(Qt.WindowModality.NonModal)
+        if self.current_video_device_preferences:
+            self._set_device_dialog_defaults(selection_dialog, self.current_video_device_preferences)
+
+        selection_dialog.accepted.connect(lambda: self._apply_video_device_changes(selection_dialog))
+        selection_dialog.rejected.connect(self._clear_device_dialog_reference)
+        selection_dialog.finished.connect(lambda _: selection_dialog.deleteLater())
+        self.device_selection_dialog = selection_dialog
+        selection_dialog.show()
+
+    def _apply_video_device_changes(self, selection_dialog):
+        if selection_dialog is None:
+            return
+
+        camera_devices = enumerate_camera_devices()
+        microphone_devices = enumerate_audio_input_devices()
+        speaker_devices = enumerate_audio_output_devices()
         device_preferences = selection_dialog.selected_devices()
         has_camera = device_preferences["camera_device"] != NO_DEVICE_VALUE and bool(camera_devices)
         has_microphone = device_preferences["microphone_device"] != NO_DEVICE_VALUE and bool(microphone_devices)
@@ -711,16 +812,19 @@ class PortalWidget(QWidget):
             QMessageBox.information(
                 self,
                 "Partial Call",
-                "Starting the call without: " + ", ".join(missing_features) + "."
+                "Applying call settings without: " + ", ".join(missing_features) + "."
             )
 
-        self.video_window = VideoWindow(
-            self.active_group_name,
+        self.current_video_device_preferences = device_preferences.copy()
+        self.video_window.update_device_availability(
             has_camera=has_camera,
             has_microphone=has_microphone,
             has_speakers=has_speakers,
         )
-        self.video_window.show()
+        self.video_window.reset_call_view()
+
+        if hasattr(self, "webrtc_thread") and self.webrtc_thread is not None:
+            self.webrtc_thread.stop()
 
         self.webrtc_thread = WebRTCClientThread(
             host=SERVER_HOST,
@@ -730,33 +834,38 @@ class PortalWidget(QWidget):
             signal_emitter=self.video_window.signals,
             device_preferences=device_preferences,
         )
-
-        self.video_window.signals.cam_toggled.connect(
-            lambda is_muted: self.webrtc_thread.set_cam_muted(is_muted)
-        )
-        self.video_window.signals.mic_toggled.connect(
-            lambda is_muted: self.webrtc_thread.set_mic_muted(is_muted)
-        )
-
         self.webrtc_thread.start()
-        self.video_window.closed_signal.connect(self._stop_video_call)
+        self._clear_device_dialog_reference()
 
-    async def _leave_group_async(self):
-        group_id = self.active_group_id
-        if group_id in (None, "Groq AI", "global-lobby-001"):
+    def _set_device_dialog_defaults(self, selection_dialog, device_preferences):
+        self._set_combo_to_value(selection_dialog.camera_combo, device_preferences.get("camera_device"))
+        self._set_combo_to_value(selection_dialog.microphone_combo, device_preferences.get("microphone_device"))
+        self._set_combo_to_value(selection_dialog.speaker_combo, device_preferences.get("speaker_device"))
+
+    @staticmethod
+    def _set_combo_to_value(combo_box, value):
+        if value is None:
+            value = "__auto__"
+        index = combo_box.findData(value)
+        if index >= 0:
+            combo_box.setCurrentIndex(index)
+
+    def _clear_device_dialog_reference(self):
+        self.device_selection_dialog = None
+
+    def _attach_video_window_handlers(self):
+        if getattr(self.video_window, "_handlers_attached", False):
             return
 
-        response = await self.net_client.request_group_action({
-            "action": "leave_group",
-            "group_id": group_id,
-        })
-        if not response or response.get("action") != "group_left":
-            return
+        self.video_window.signals.cam_toggled.connect(self._forward_cam_toggle)
+        self.video_window.signals.mic_toggled.connect(self._forward_mic_toggle)
+        self.video_window.signals.devices_requested.connect(self._change_video_devices)
+        self.video_window._handlers_attached = True
 
-        btn = self.group_buttons.pop(group_id, None)
-        if btn is not None:
-            btn.deleteLater()
+    def _forward_cam_toggle(self, is_muted):
+        if hasattr(self, "webrtc_thread") and self.webrtc_thread is not None:
+            self.webrtc_thread.set_cam_muted(is_muted)
 
-        self.groups_data.pop(group_id, None)
-        self._switch_group("global-lobby-001", force=True)
-        self._add_chat_msg("System", "You left the group.", "#A0AEC0", datetime.now().strftime("%H:%M"))
+    def _forward_mic_toggle(self, is_muted):
+        if hasattr(self, "webrtc_thread") and self.webrtc_thread is not None:
+            self.webrtc_thread.set_mic_muted(is_muted)

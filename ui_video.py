@@ -72,6 +72,7 @@ class VideoSignals(QObject):
     new_frame = pyqtSignal(str, QImage)
     mic_toggled = pyqtSignal(bool)
     cam_toggled = pyqtSignal(bool)
+    devices_requested = pyqtSignal()
     peer_disconnected = pyqtSignal(str)
     error_message = pyqtSignal(str)
 
@@ -174,16 +175,19 @@ class VideoWindow(QWidget):
 
         self.btn_mic = QPushButton("Mic: On")
         self.btn_cam = QPushButton("Cam: On")
+        self.btn_devices = QPushButton("Devices")
         self.btn_hangup = QPushButton("Hang Up")
 
         self.btn_mic.setStyleSheet(self.btn_style_on)
         self.btn_cam.setStyleSheet(self.btn_style_on)
+        self.btn_devices.setStyleSheet(self.btn_style_on)
         self.btn_hangup.setStyleSheet(self.btn_style_off)
 
         self.btn_mic.setCheckable(True)
         self.btn_cam.setCheckable(True)
         self.btn_mic.clicked.connect(self._toggle_mic)
         self.btn_cam.clicked.connect(self._toggle_cam)
+        self.btn_devices.clicked.connect(self.signals.devices_requested.emit)
         self.btn_hangup.clicked.connect(self.close)
 
         if not self.has_microphone:
@@ -201,6 +205,7 @@ class VideoWindow(QWidget):
         toolbar_layout.addStretch()
         toolbar_layout.addWidget(self.btn_mic)
         toolbar_layout.addWidget(self.btn_cam)
+        toolbar_layout.addWidget(self.btn_devices)
         toolbar_layout.addWidget(self.btn_hangup)
         toolbar_layout.addStretch()
         main_layout.addWidget(toolbar_container)
@@ -315,6 +320,37 @@ class VideoWindow(QWidget):
     @pyqtSlot(str)
     def _show_error_message(self, message):
         QMessageBox.warning(self, "Call Device Error", message)
+
+    def update_device_availability(self, has_camera, has_microphone, has_speakers):
+        self.has_camera = has_camera
+        self.has_microphone = has_microphone
+        self.has_speakers = has_speakers
+
+        if self.has_microphone:
+            self.btn_mic.setEnabled(True)
+            self.btn_mic.setChecked(False)
+            self.btn_mic.setText("Mic: On")
+            self.btn_mic.setStyleSheet(self.btn_style_on)
+        else:
+            self.btn_mic.setChecked(True)
+            self.btn_mic.setText("Mic: Unavailable")
+            self.btn_mic.setEnabled(False)
+            self.btn_mic.setStyleSheet(self.btn_style_off)
+
+        if self.has_camera:
+            self.btn_cam.setEnabled(True)
+            self.btn_cam.setChecked(False)
+            self.btn_cam.setText("Cam: On")
+            self.btn_cam.setStyleSheet(self.btn_style_on)
+        else:
+            self.btn_cam.setChecked(True)
+            self.btn_cam.setText("Cam: Unavailable")
+            self.btn_cam.setEnabled(False)
+            self.btn_cam.setStyleSheet(self.btn_style_off)
+
+    def reset_call_view(self):
+        for username in list(self.video_order):
+            self.remove_video_feed(username)
 
     def closeEvent(self, event):
         self.closed_signal.emit()
