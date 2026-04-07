@@ -40,6 +40,9 @@ AUDIO_INPUT_QUEUE_SIZE = 20
 AUDIO_OUTPUT_QUEUE_SIZE = 100
 AUDIO_OUTPUT_RESAMPLE_FORMAT = "s16"
 AUDIO_DEVICE_LATENCY = "low"
+CAMERA_PROBE_LIMIT = 6
+CAMERA_AUTO_DEVICE = "__auto__"
+NO_DEVICE_VALUE = "__none__"
 
 
 def build_blank_video_frame(local_username: str) -> np.ndarray:
@@ -61,19 +64,95 @@ def build_blank_video_frame(local_username: str) -> np.ndarray:
     return frame
 
 
+def enumerate_camera_devices():
+    devices = []
+    for camera_index in range(CAMERA_PROBE_LIMIT):
+        capture = cv2.VideoCapture(camera_index, VIDEO_BACKEND)
+        if capture is not None and capture.isOpened():
+            devices.append({"id": camera_index, "name": f"Camera {camera_index}"})
+            capture.release()
+    return devices
+
+
+def enumerate_audio_input_devices():
+    return _enumerate_audio_devices(input_required=True)
+
+
+def enumerate_audio_output_devices():
+    return _enumerate_audio_devices(input_required=False)
+
+
+def _enumerate_audio_devices(input_required: bool):
+    devices = []
+    try:
+        for device_index, device in enumerate(sd.query_devices()):
+            max_channel_count = device["max_input_channels"] if input_required else device["max_output_channels"]
+            if max_channel_count > 0:
+                devices.append({"id": device_index, "name": device["name"]})
+    except Exception:
+        return []
+    return devices
+
+
+def resolve_camera_device(selection):
+    available_cameras = enumerate_camera_devices()
+    if selection == NO_DEVICE_VALUE:
+        return None
+    if isinstance(selection, int):
+        return selection
+    if available_cameras:
+        return available_cameras[0]["id"]
+    return None
+
+
+def resolve_audio_input_device(selection):
+    return _resolve_audio_device(selection, enumerate_audio_input_devices(), input_device=True)
+
+
+def resolve_audio_output_device(selection):
+    return _resolve_audio_device(selection, enumerate_audio_output_devices(), input_device=False)
+
+
+def _resolve_audio_device(selection, devices, input_device: bool):
+    if selection == NO_DEVICE_VALUE:
+        return None
+    if isinstance(selection, int):
+        return selection
+
+    try:
+        default_device = sd.default.device[0 if input_device else 1]
+        if isinstance(default_device, int) and default_device >= 0:
+            return default_device
+    except Exception:
+        pass
+
+    if devices:
+        return devices[0]["id"]
+    return None
+
+
 class CameraStreamTrack(VideoStreamTrack):
-    def __init__(self, local_username, signal_emitter):
+    def __init__(self, local_username, signal_emitter, camera_device):
         super().__init__()
         self.kind = "video"
         self.local_username = local_username
         self.signal_emitter = signal_emitter
         self.is_muted = False
         self._running = True
+        self._camera_available = camera_device is not None
 
-        self.cap = cv2.VideoCapture(VIDEO_DEVICE_INDEX, VIDEO_BACKEND)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, VIDEO_FRAME_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, VIDEO_FRAME_HEIGHT)
-        self.cap.set(cv2.CAP_PROP_FPS, VIDEO_TARGET_FPS)
+        self.cap = None
+        if camera_device is not None:
+            self.cap = cv2.VideoCapture(camera_device, VIDEO_BACKEND)
+            if self.cap is not None and self.cap.isOpened():
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, VIDEO_FRAME_WIDTH)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, VIDEO_FRAME_HEIGHT)
+                self.cap.set(cv2.CAP_PROP_FPS, VIDEO_TARGET_FPS)
+            else:
+                self._camera_available = False
+                if self.cap is not None:
+                    self.cap.release()
+                self.cap = None
 
         self._latest_frame = None
         self._task = asyncio.create_task(self._camera_loop())
@@ -81,7 +160,10 @@ class CameraStreamTrack(VideoStreamTrack):
     async def _camera_loop(self):
         try:
             while self._running:
-                ret, frame = self.cap.read()
+                ret = False
+                frame = None
+                if self.cap is not None:
+                    ret, frame = self.cap.read()
 
                 if self.is_muted or not ret:
                     frame = build_blank_video_frame(self.local_username)
@@ -145,6 +227,7 @@ class MicrophoneStreamTrack(AudioStreamTrack):
         sample_rate: int = AUDIO_SAMPLE_RATE,
         channels: int = AUDIO_CHANNEL_COUNT,
         block_size: int = AUDIO_BLOCK_SIZE,
+        input_device=None,
     ):
         super().__init__()
         self.sample_rate = sample_rate
@@ -161,6 +244,7 @@ class MicrophoneStreamTrack(AudioStreamTrack):
             channels=self.channels,
             dtype=AUDIO_SAMPLE_DTYPE,
             blocksize=self.block_size,
+            device=input_device,
             latency=AUDIO_DEVICE_LATENCY,
             callback=self._audio_callback,
         )
@@ -224,6 +308,7 @@ class AudioPlaybackBuffer:
         sample_rate: int = AUDIO_SAMPLE_RATE,
         channels: int = AUDIO_CHANNEL_COUNT,
         block_size: int = AUDIO_BLOCK_SIZE,
+        output_device=None,
     ):
         self.sample_rate = sample_rate
         self.channels = channels
@@ -234,6 +319,7 @@ class AudioPlaybackBuffer:
             channels=self.channels,
             dtype=AUDIO_SAMPLE_DTYPE,
             blocksize=self.block_size,
+            device=output_device,
             latency=AUDIO_DEVICE_LATENCY,
             callback=self._callback,
         )
@@ -311,11 +397,20 @@ async def display_stream(track, target_username, signal_emitter):
         print(f"Video stream from {target_username} stopped: {e}")
 
 
-async def display_audio_stream(track, target_username):
+async def display_audio_stream(track, target_username, output_device):
+    if output_device is None:
+        try:
+            while True:
+                await track.recv()
+        except Exception as e:
+            print(f"Audio stream from {target_username} stopped: {e}")
+        return
+
     player = AudioPlaybackBuffer(
         sample_rate=AUDIO_SAMPLE_RATE,
         channels=AUDIO_CHANNEL_COUNT,
         block_size=AUDIO_BLOCK_SIZE,
+        output_device=output_device,
     )
     resampler = AudioResampler(
         format=AUDIO_OUTPUT_RESAMPLE_FORMAT,

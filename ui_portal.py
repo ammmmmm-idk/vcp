@@ -15,9 +15,14 @@ from qasync import asyncSlot
 
 import file_client
 from attachment_security import validate_attachment_filename
+from media_engine import (
+    enumerate_audio_input_devices,
+    enumerate_audio_output_devices,
+    enumerate_camera_devices,
+)
 from ui_dialogs import FilterSelectionDialog, CreateGroupDialog, GroupManagementDialog
 from webrtc_thread import WebRTCClientThread
-from ui_video import VideoWindow
+from ui_video import DeviceSelectionDialog, NO_DEVICE_VALUE, VideoWindow
 from config import MAX_GROUP_NAME_LENGTH, MAX_UPLOAD_FILE_SIZE, SERVER_HOST, VIDEO_SIGNALING_PORT
 
 
@@ -662,6 +667,79 @@ class PortalWidget(QWidget):
 
     def _leave_active_group(self):
         asyncio.create_task(self._leave_group_async())
+
+    def launch_video_call(self):
+        """Triggered when the user clicks 'Join Video Call'"""
+        if hasattr(self, 'webrtc_thread') and self.webrtc_thread is not None:
+            QMessageBox.warning(
+                self,
+                "Active Call",
+                "You are already in an active video call! Please hang up before joining another room."
+            )
+            return
+
+        print(f"Launching Video Call for room: {self.active_group_id}")
+
+        camera_devices = enumerate_camera_devices()
+        microphone_devices = enumerate_audio_input_devices()
+        speaker_devices = enumerate_audio_output_devices()
+        selection_dialog = DeviceSelectionDialog(camera_devices, microphone_devices, speaker_devices, self)
+        if not selection_dialog.exec():
+            return
+
+        device_preferences = selection_dialog.selected_devices()
+        has_camera = device_preferences["camera_device"] != NO_DEVICE_VALUE and bool(camera_devices)
+        has_microphone = device_preferences["microphone_device"] != NO_DEVICE_VALUE and bool(microphone_devices)
+        has_speakers = device_preferences["speaker_device"] != NO_DEVICE_VALUE and bool(speaker_devices)
+
+        if not has_camera and not has_microphone and not has_speakers:
+            QMessageBox.warning(
+                self,
+                "No Devices",
+                "No usable camera, microphone, or speakers are available for the call."
+            )
+            return
+
+        missing_features = []
+        if not has_camera:
+            missing_features.append("camera")
+        if not has_microphone:
+            missing_features.append("microphone")
+        if not has_speakers:
+            missing_features.append("speakers")
+        if missing_features:
+            QMessageBox.information(
+                self,
+                "Partial Call",
+                "Starting the call without: " + ", ".join(missing_features) + "."
+            )
+
+        self.video_window = VideoWindow(
+            self.active_group_name,
+            has_camera=has_camera,
+            has_microphone=has_microphone,
+            has_speakers=has_speakers,
+        )
+        self.video_window.show()
+
+        self.webrtc_thread = WebRTCClientThread(
+            host=SERVER_HOST,
+            port=VIDEO_SIGNALING_PORT,
+            username=self.username,
+            group_id=self.active_group_id,
+            signal_emitter=self.video_window.signals,
+            device_preferences=device_preferences,
+        )
+
+        self.video_window.signals.cam_toggled.connect(
+            lambda is_muted: self.webrtc_thread.set_cam_muted(is_muted)
+        )
+        self.video_window.signals.mic_toggled.connect(
+            lambda is_muted: self.webrtc_thread.set_mic_muted(is_muted)
+        )
+
+        self.webrtc_thread.start()
+        self.video_window.closed_signal.connect(self._stop_video_call)
 
     async def _leave_group_async(self):
         group_id = self.active_group_id

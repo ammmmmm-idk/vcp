@@ -10,13 +10,14 @@ THREAD_JOIN_TIMEOUT_MS = 3000
 
 
 class WebRTCClientThread(QThread):
-    def __init__(self, host, port, username, group_id, signal_emitter):
+    def __init__(self, host, port, username, group_id, signal_emitter, device_preferences=None):
         super().__init__()
         self.host = host
         self.port = port
         self.username = username
         self.group_id = group_id
         self.signal_emitter = signal_emitter
+        self.device_preferences = device_preferences or {}
         self.running = True
 
     def run(self):
@@ -37,7 +38,12 @@ class WebRTCClientThread(QThread):
         self.signaling = TCPSignaling()
         try:
             await self.signaling.connect(self.host, self.port)
-            self.peer_manager = MultiPeerManager(self.signaling, self.username, self.signal_emitter)
+            self.peer_manager = MultiPeerManager(
+                self.signaling,
+                self.username,
+                self.signal_emitter,
+                self.device_preferences,
+            )
 
             await self.signaling.send_data({
                 "type": "join",

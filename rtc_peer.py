@@ -8,6 +8,9 @@ from media_engine import (
     MicrophoneStreamTrack,
     display_audio_stream,
     display_stream,
+    resolve_audio_input_device,
+    resolve_audio_output_device,
+    resolve_camera_device,
 )
 from protocol import filter_sdp_for_h264
 
@@ -16,37 +19,60 @@ DEFAULT_STUN_SERVER_URL = "stun:stun.l.google.com:19302"
 
 
 class MultiPeerManager:
-    def __init__(self, signaling, local_username, signal_emitter):
+    def __init__(self, signaling, local_username, signal_emitter, device_preferences):
         self.signaling = signaling
         self.local_username = local_username
         self.signal_emitter = signal_emitter
+        self.device_preferences = device_preferences or {}
         self.peers = {}
         self.outbound_tracks = {}
 
-        self.local_video_track = CameraStreamTrack(self.local_username, self.signal_emitter)
-        self.local_audio_track = MicrophoneStreamTrack()
-        self.media_relay = MediaRelay()
+        self.camera_device = resolve_camera_device(self.device_preferences.get("camera_device"))
+        self.microphone_device = resolve_audio_input_device(self.device_preferences.get("microphone_device"))
+        self.speaker_device = resolve_audio_output_device(self.device_preferences.get("speaker_device"))
 
+        self.local_video_track = CameraStreamTrack(
+            self.local_username,
+            self.signal_emitter,
+            self.camera_device,
+        )
+        self.local_audio_track = None
+        if self.microphone_device is not None:
+            try:
+                self.local_audio_track = MicrophoneStreamTrack(input_device=self.microphone_device)
+            except Exception as exc:
+                self.signal_emitter.error_message.emit(
+                    f"Microphone unavailable. Starting call without outgoing audio. ({exc})"
+                )
+
+        self.media_relay = MediaRelay()
         self.rtc_config = RTCConfiguration(
             iceServers=[RTCIceServer(urls=DEFAULT_STUN_SERVER_URL)]
         )
 
     def set_camera_muted(self, is_muted):
-        if self.local_video_track:
+        if self.local_video_track is not None:
             self.local_video_track.is_muted = is_muted
 
     def set_microphone_muted(self, is_muted):
-        if self.local_audio_track:
+        if self.local_audio_track is not None:
             self.local_audio_track.is_muted = is_muted
 
     async def create_peer_connection(self, target_username):
         pc = RTCPeerConnection(configuration=self.rtc_config)
         self.peers[target_username] = pc
+
+        outbound_tracks = []
         outbound_video_track = self.media_relay.subscribe(self.local_video_track)
-        outbound_audio_track = self.media_relay.subscribe(self.local_audio_track)
-        self.outbound_tracks[target_username] = [outbound_video_track, outbound_audio_track]
+        outbound_tracks.append(outbound_video_track)
         pc.addTrack(outbound_video_track)
-        pc.addTrack(outbound_audio_track)
+
+        if self.local_audio_track is not None:
+            outbound_audio_track = self.media_relay.subscribe(self.local_audio_track)
+            outbound_tracks.append(outbound_audio_track)
+            pc.addTrack(outbound_audio_track)
+
+        self.outbound_tracks[target_username] = outbound_tracks
 
         @pc.on("track")
         def on_track(track):
@@ -55,7 +81,7 @@ class MultiPeerManager:
                 asyncio.ensure_future(display_stream(track, target_username, self.signal_emitter))
             elif track.kind == "audio":
                 print(f"Routing audio from {target_username} to speakers...")
-                asyncio.ensure_future(display_audio_stream(track, target_username))
+                asyncio.ensure_future(display_audio_stream(track, target_username, self.speaker_device))
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -154,9 +180,9 @@ class MultiPeerManager:
         for username in list(self.peers.keys()):
             await self._release_peer(username, close_pc=True)
 
-        if self.local_video_track:
+        if self.local_video_track is not None:
             self.local_video_track.stop()
-        if self.local_audio_track:
+        if self.local_audio_track is not None:
             self.local_audio_track.stop()
 
     async def _release_peer(self, target_username, close_pc: bool):

@@ -2,7 +2,20 @@ import math
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 WINDOW_MIN_WIDTH = 900
@@ -23,6 +36,7 @@ VIDEO_TILE_BORDER_WIDTH = 2
 VIDEO_TILE_RADIUS = 10
 VIDEO_TILE_SPACING = 8
 NAME_FONT_SIZE = 14
+SELECTION_DIALOG_WIDTH = 420
 
 WINDOW_BACKGROUND_COLOR = "#1A202C"
 TOOLBAR_BACKGROUND_COLOR = "#2D3748"
@@ -34,6 +48,9 @@ BUTTON_OFF_HOVER_COLOR = "#FC8181"
 VIDEO_TILE_BACKGROUND_COLOR = "#000000"
 VIDEO_TILE_BORDER_COLOR = "#4A5568"
 TEXT_COLOR = "white"
+
+NO_DEVICE_VALUE = "__none__"
+AUTO_DEVICE_VALUE = "__auto__"
 
 
 def build_toggle_button_style(background_color: str, hover_color: str) -> str:
@@ -56,12 +73,62 @@ class VideoSignals(QObject):
     mic_toggled = pyqtSignal(bool)
     cam_toggled = pyqtSignal(bool)
     peer_disconnected = pyqtSignal(str)
+    error_message = pyqtSignal(str)
+
+
+class DeviceSelectionDialog(QDialog):
+    def __init__(self, camera_devices, microphone_devices, speaker_devices, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Call Devices")
+        self.setMinimumWidth(SELECTION_DIALOG_WIDTH)
+
+        layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+        layout.addLayout(form_layout)
+
+        self.camera_combo = QComboBox()
+        self.microphone_combo = QComboBox()
+        self.speaker_combo = QComboBox()
+
+        self._populate_camera_devices(camera_devices)
+        self._populate_audio_devices(self.microphone_combo, microphone_devices)
+        self._populate_audio_devices(self.speaker_combo, speaker_devices)
+
+        form_layout.addRow("Camera", self.camera_combo)
+        form_layout.addRow("Microphone", self.microphone_combo)
+        form_layout.addRow("Speakers", self.speaker_combo)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _populate_camera_devices(self, camera_devices):
+        self.camera_combo.addItem("Auto", AUTO_DEVICE_VALUE)
+        self.camera_combo.addItem("None", NO_DEVICE_VALUE)
+        for device in camera_devices:
+            self.camera_combo.addItem(device["name"], device["id"])
+
+    def _populate_audio_devices(self, combo_box, devices):
+        combo_box.addItem("Auto", AUTO_DEVICE_VALUE)
+        combo_box.addItem("None", NO_DEVICE_VALUE)
+        for device in devices:
+            combo_box.addItem(device["name"], device["id"])
+
+    def selected_devices(self):
+        return {
+            "camera_device": self.camera_combo.currentData(),
+            "microphone_device": self.microphone_combo.currentData(),
+            "speaker_device": self.speaker_combo.currentData(),
+        }
 
 
 class VideoWindow(QWidget):
     closed_signal = pyqtSignal()
 
-    def __init__(self, room_name):
+    def __init__(self, room_name, has_camera=True, has_microphone=True, has_speakers=True):
         super().__init__()
         self.setWindowTitle(room_name)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
@@ -70,10 +137,14 @@ class VideoWindow(QWidget):
         self.signals = VideoSignals()
         self.signals.new_frame.connect(self.update_video_feed)
         self.signals.peer_disconnected.connect(self.remove_video_feed)
+        self.signals.error_message.connect(self._show_error_message)
 
         self.video_labels = {}
         self.video_containers = {}
         self.video_order = []
+        self.has_camera = has_camera
+        self.has_microphone = has_microphone
+        self.has_speakers = has_speakers
         self.btn_style_on = build_toggle_button_style(BUTTON_ON_COLOR, BUTTON_ON_HOVER_COLOR)
         self.btn_style_off = build_toggle_button_style(BUTTON_OFF_COLOR, BUTTON_OFF_HOVER_COLOR)
         self._setup_ui()
@@ -114,6 +185,18 @@ class VideoWindow(QWidget):
         self.btn_mic.clicked.connect(self._toggle_mic)
         self.btn_cam.clicked.connect(self._toggle_cam)
         self.btn_hangup.clicked.connect(self.close)
+
+        if not self.has_microphone:
+            self.btn_mic.setChecked(True)
+            self.btn_mic.setText("Mic: Unavailable")
+            self.btn_mic.setEnabled(False)
+            self.btn_mic.setStyleSheet(self.btn_style_off)
+
+        if not self.has_camera:
+            self.btn_cam.setChecked(True)
+            self.btn_cam.setText("Cam: Unavailable")
+            self.btn_cam.setEnabled(False)
+            self.btn_cam.setStyleSheet(self.btn_style_off)
 
         toolbar_layout.addStretch()
         toolbar_layout.addWidget(self.btn_mic)
@@ -228,6 +311,10 @@ class VideoWindow(QWidget):
             row_index = index // column_count
             column_index = index % column_count
             self.grid_layout.addWidget(container, row_index, column_index)
+
+    @pyqtSlot(str)
+    def _show_error_message(self, message):
+        QMessageBox.warning(self, "Call Device Error", message)
 
     def closeEvent(self, event):
         self.closed_signal.emit()
