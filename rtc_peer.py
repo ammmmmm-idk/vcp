@@ -18,6 +18,7 @@ class MultiPeerManager:
         self.local_username = local_username
         self.signal_emitter = signal_emitter
         self.peers = {}
+        self.outbound_tracks = {}
 
         self.local_video_track = CameraStreamTrack(self.local_username, self.signal_emitter)
         self.local_audio_track = MicrophoneStreamTrack()
@@ -38,8 +39,11 @@ class MultiPeerManager:
     async def create_peer_connection(self, target_username):
         pc = RTCPeerConnection(configuration=self.rtc_config)
         self.peers[target_username] = pc
-        pc.addTrack(self.media_relay.subscribe(self.local_video_track))
-        pc.addTrack(self.media_relay.subscribe(self.local_audio_track))
+        outbound_video_track = self.media_relay.subscribe(self.local_video_track)
+        outbound_audio_track = self.media_relay.subscribe(self.local_audio_track)
+        self.outbound_tracks[target_username] = [outbound_video_track, outbound_audio_track]
+        pc.addTrack(outbound_video_track)
+        pc.addTrack(outbound_audio_track)
 
         @pc.on("track")
         def on_track(track):
@@ -59,7 +63,7 @@ class MultiPeerManager:
                     self.signal_emitter.peer_disconnected.emit(target_username)
                 except RuntimeError:
                     pass
-                self.peers.pop(target_username, None)
+                await self._release_peer(target_username, close_pc=False)
 
         @pc.on("icecandidate")
         async def on_icecandidate(candidate):
@@ -137,20 +141,30 @@ class MultiPeerManager:
             await self.peers[sender_username].addIceCandidate(candidate)
 
     async def handle_peer_left(self, sender_username):
-        pc = self.peers.pop(sender_username, None)
-        if pc:
-            await pc.close()
+        await self._release_peer(sender_username, close_pc=True)
         try:
             self.signal_emitter.peer_disconnected.emit(sender_username)
         except RuntimeError:
             pass
 
     async def close_all(self):
-        for _, pc in list(self.peers.items()):
-            await pc.close()
-        self.peers.clear()
+        for username in list(self.peers.keys()):
+            await self._release_peer(username, close_pc=True)
 
         if self.local_video_track:
             self.local_video_track.stop()
         if self.local_audio_track:
             self.local_audio_track.stop()
+
+    async def _release_peer(self, target_username, close_pc: bool):
+        pc = self.peers.pop(target_username, None)
+        outbound_tracks = self.outbound_tracks.pop(target_username, [])
+
+        if close_pc and pc:
+            await pc.close()
+
+        for track in outbound_tracks:
+            try:
+                track.stop()
+            except Exception:
+                pass
