@@ -12,6 +12,9 @@ from media_engine import (
 from protocol import filter_sdp_for_h264
 
 
+DEFAULT_STUN_SERVER_URL = "stun:stun.l.google.com:19302"
+
+
 class MultiPeerManager:
     def __init__(self, signaling, local_username, signal_emitter):
         self.signaling = signaling
@@ -25,7 +28,7 @@ class MultiPeerManager:
         self.media_relay = MediaRelay()
 
         self.rtc_config = RTCConfiguration(
-            iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")]
+            iceServers=[RTCIceServer(urls=DEFAULT_STUN_SERVER_URL)]
         )
 
     def set_camera_muted(self, is_muted):

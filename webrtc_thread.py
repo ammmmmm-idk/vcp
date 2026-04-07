@@ -6,6 +6,9 @@ from rtc_peer import MultiPeerManager
 from signaling import TCPSignaling
 
 
+THREAD_JOIN_TIMEOUT_MS = 3000
+
+
 class WebRTCClientThread(QThread):
     def __init__(self, host, port, username, group_id, signal_emitter):
         super().__init__()
@@ -74,7 +77,7 @@ class WebRTCClientThread(QThread):
                 self.loop.call_soon_threadsafe(self.signaling.close)
 
         self.quit()
-        self.wait(3000)
+        self.wait(THREAD_JOIN_TIMEOUT_MS)
 
     def set_cam_muted(self, is_muted):
         print(f"Camera bridge signal caught. Muted = {is_muted}")
