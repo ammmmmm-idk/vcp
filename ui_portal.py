@@ -767,6 +767,7 @@ class PortalWidget(QWidget):
 
     def _open_video_window(self):
         print(f"Opening Video Window for Room: {self.active_group_name}")
+        self.current_call_room_id = self.active_group_id
 
         self.video_window = VideoWindow(self.active_group_name)
         self.video_window.show()
@@ -776,18 +777,10 @@ class PortalWidget(QWidget):
             port=VIDEO_SIGNALING_PORT,
             username=self.username,
             group_id=self.active_group_id,
-            signal_emitter=self.video_window.signals
+            signal_emitter=self.video_window.signals,
+            transcript_callback=self.video_window.signals.transcript_chunk.emit,
         )
-
-        # ---------------------------------------------------------
-        # THE FIX: Use a lambda to bypass the PyQt thread queue!
-        # ---------------------------------------------------------
-        self.video_window.signals.cam_toggled.connect(
-            lambda is_muted: self.webrtc_thread.set_cam_muted(is_muted)
-        )
-        self.video_window.signals.mic_toggled.connect(
-            lambda is_muted: self.webrtc_thread.set_mic_muted(is_muted)
-        )
+        self._attach_video_window_handlers()
 
         self.webrtc_thread.start()
         self.video_window.closed_signal.connect(self._stop_video_call)
