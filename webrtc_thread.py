@@ -10,7 +10,7 @@ THREAD_JOIN_TIMEOUT_MS = 3000
 
 
 class WebRTCClientThread(QThread):
-    def __init__(self, host, port, username, group_id, signal_emitter, device_preferences=None):
+    def __init__(self, host, port, username, group_id, signal_emitter, device_preferences=None, transcript_callback=None):
         super().__init__()
         self.host = host
         self.port = port
@@ -18,6 +18,7 @@ class WebRTCClientThread(QThread):
         self.group_id = group_id
         self.signal_emitter = signal_emitter
         self.device_preferences = device_preferences or {}
+        self.transcript_callback = transcript_callback
         self.running = True
 
     def run(self):
@@ -43,6 +44,7 @@ class WebRTCClientThread(QThread):
                 self.username,
                 self.signal_emitter,
                 self.device_preferences,
+                transcript_callback=self.transcript_callback,
             )
 
             await self.signaling.send_data({

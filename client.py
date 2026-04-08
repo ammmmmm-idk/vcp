@@ -105,6 +105,18 @@ class NetworkClient(QObject):
                 return None
         return None
 
+    async def send_assistant_chat(self, group_id: str, msg: str, color: str = "#9F7AEA"):
+        response = await self.request_group_action({
+            "action": "assistant_chat",
+            "group_id": group_id,
+            "sender": "Groq",
+            "msg": msg,
+            "color": color,
+        })
+        if response and response.get("action") == "assistant_chat_ack":
+            return response.get("message_id")
+        return None
+
     async def send_file_notification(self, sender: str, filename: str):
         """Tells the main chat server that a file was successfully uploaded."""
         if self.writer:
@@ -143,6 +155,7 @@ class NetworkClient(QObject):
                 "action": "auth",
                 "email": self.auth_email,
                 "session_token": self.session_token,
+                "auxiliary": True,
             })
             auth_response = await protocol.receive_message(reader)
             if not auth_response or auth_response.get("action") != "auth_ack":

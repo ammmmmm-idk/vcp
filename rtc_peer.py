@@ -19,11 +19,12 @@ DEFAULT_STUN_SERVER_URL = "stun:stun.l.google.com:19302"
 
 
 class MultiPeerManager:
-    def __init__(self, signaling, local_username, signal_emitter, device_preferences):
+    def __init__(self, signaling, local_username, signal_emitter, device_preferences, transcript_callback=None):
         self.signaling = signaling
         self.local_username = local_username
         self.signal_emitter = signal_emitter
         self.device_preferences = device_preferences or {}
+        self.transcript_callback = transcript_callback
         self.peers = {}
         self.outbound_tracks = {}
 
@@ -81,7 +82,14 @@ class MultiPeerManager:
                 asyncio.ensure_future(display_stream(track, target_username, self.signal_emitter))
             elif track.kind == "audio":
                 print(f"Routing audio from {target_username} to speakers...")
-                asyncio.ensure_future(display_audio_stream(track, target_username, self.speaker_device))
+                asyncio.ensure_future(
+                    display_audio_stream(
+                        track,
+                        target_username,
+                        self.speaker_device,
+                        self.transcript_callback,
+                    )
+                )
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():

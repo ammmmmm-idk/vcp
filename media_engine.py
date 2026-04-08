@@ -1,6 +1,7 @@
 import asyncio
 import fractions
 import queue
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -10,6 +11,8 @@ from aiortc import AudioStreamTrack, VideoStreamTrack
 from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame, VideoFrame
 from av.audio.resampler import AudioResampler
+
+from transcription_service import pcm_to_wav_bytes, transcribe_wav_bytes
 
 
 VIDEO_DEVICE_INDEX = 0
@@ -40,6 +43,9 @@ AUDIO_INPUT_QUEUE_SIZE = 20
 AUDIO_OUTPUT_QUEUE_SIZE = 100
 AUDIO_OUTPUT_RESAMPLE_FORMAT = "s16"
 AUDIO_DEVICE_LATENCY = "low"
+AUDIO_TRANSCRIPTION_SECONDS = 4
+AUDIO_TRANSCRIPTION_MIN_TEXT_LENGTH = 2
+AUDIO_TRANSCRIPTION_FRAME_COUNT = AUDIO_SAMPLE_RATE * AUDIO_TRANSCRIPTION_SECONDS
 CAMERA_PROBE_LIMIT = 6
 CAMERA_AUTO_DEVICE = "__auto__"
 NO_DEVICE_VALUE = "__none__"
@@ -397,7 +403,7 @@ async def display_stream(track, target_username, signal_emitter):
         print(f"Video stream from {target_username} stopped: {e}")
 
 
-async def display_audio_stream(track, target_username, output_device):
+async def display_audio_stream(track, target_username, output_device, transcript_callback=None):
     if output_device is None:
         try:
             while True:
@@ -417,6 +423,29 @@ async def display_audio_stream(track, target_username, output_device):
         layout=AUDIO_LAYOUT_MONO,
         rate=AUDIO_SAMPLE_RATE,
     )
+    transcript_samples = []
+    transcript_sample_total = 0
+
+    async def flush_transcript_samples():
+        nonlocal transcript_samples, transcript_sample_total
+        if transcript_sample_total <= 0 or transcript_callback is None:
+            transcript_samples = []
+            transcript_sample_total = 0
+            return
+
+        merged_samples = np.concatenate(transcript_samples, axis=0)
+        wav_bytes = pcm_to_wav_bytes(merged_samples.astype(np.int16).tobytes(), AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_COUNT)
+        transcript_samples = []
+        transcript_sample_total = 0
+
+        try:
+            transcript_text = await transcribe_wav_bytes(wav_bytes)
+            if transcript_text and len(transcript_text.strip()) >= AUDIO_TRANSCRIPTION_MIN_TEXT_LENGTH:
+                timestamp = datetime.now().isoformat(timespec="seconds")
+                transcript_callback(target_username, transcript_text.strip(), timestamp)
+        except Exception as error:
+            print(f"Transcription for {target_username} failed: {error}")
+
     try:
         while True:
             frame = await track.recv()
@@ -426,7 +455,13 @@ async def display_audio_stream(track, target_username, output_device):
                     audio = audio.reshape(1, -1)
                 samples = audio.T.copy(order="C")
                 player.write(samples)
+                if transcript_callback is not None:
+                    transcript_samples.append(samples)
+                    transcript_sample_total += samples.shape[0]
+                    if transcript_sample_total >= AUDIO_TRANSCRIPTION_FRAME_COUNT:
+                        await flush_transcript_samples()
     except Exception as e:
         print(f"Audio stream from {target_username} stopped: {e}")
     finally:
+        await flush_transcript_samples()
         player.stop()

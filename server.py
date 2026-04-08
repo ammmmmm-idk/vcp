@@ -215,6 +215,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             elif action == "auth":
                 email = payload.get("email", "").strip().lower()
                 session_token = payload.get("session_token", "").strip()
+                is_auxiliary_auth = bool(payload.get("auxiliary"))
                 if not email:
                     await send_error(writer, "Authentication request is missing email.")
                     continue
@@ -236,20 +237,21 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     "email": user["email"],
                     "fullname": user["fullname"]
                 }
-                existing_writer = authenticated_connections.get(authenticated_user["email"])
-                if existing_writer and existing_writer is not writer:
-                    try:
-                        await protocol.send_message(existing_writer, {
-                            "action": "error",
-                            "message": "This account was logged in from another session."
-                        })
-                    except Exception:
-                        pass
-                    try:
-                        existing_writer.close()
-                    except Exception:
-                        pass
-                authenticated_connections[authenticated_user["email"]] = writer
+                if not is_auxiliary_auth:
+                    existing_writer = authenticated_connections.get(authenticated_user["email"])
+                    if existing_writer and existing_writer is not writer:
+                        try:
+                            await protocol.send_message(existing_writer, {
+                                "action": "error",
+                                "message": "This account was logged in from another session."
+                            })
+                        except Exception:
+                            pass
+                        try:
+                            existing_writer.close()
+                        except Exception:
+                            pass
+                    authenticated_connections[authenticated_user["email"]] = writer
                 logger.info("auth_success peer=%s email=%s fullname=%s", peer, authenticated_user["email"], authenticated_user["fullname"])
                 await protocol.send_message(writer, {
                     "action": "auth_ack",
@@ -402,6 +404,55 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     "action": "message_ack",
                     "message_id": payload["message_id"],
                     "timestamp": payload["timestamp"]
+                })
+
+            elif action == "assistant_chat":
+                if not authenticated_user:
+                    await send_error(writer, "Authenticate before sending assistant messages.")
+                    continue
+
+                group_id = payload.get("group_id", "").strip()
+                message_text = payload.get("msg", "")
+                if not group_id:
+                    await send_error(writer, "Assistant message is missing room.")
+                    continue
+                if not await database.user_has_group_access(authenticated_user["email"], group_id):
+                    logger.warning(
+                        "assistant_chat_denied peer=%s email=%s room=%s reason=no_access",
+                        peer,
+                        authenticated_user["email"],
+                        group_id,
+                    )
+                    await send_error(writer, "You no longer have access to that group.")
+                    continue
+                if not message_text:
+                    await send_error(writer, "Assistant message cannot be empty.")
+                    continue
+                if len(message_text) > MAX_MESSAGE_LENGTH:
+                    await send_error(writer, f"Assistant message is too long. Maximum length is {MAX_MESSAGE_LENGTH} characters.")
+                    continue
+
+                assistant_payload = {
+                    "action": "chat",
+                    "message_id": str(uuid.uuid4()),
+                    "sender": payload.get("sender", "Groq"),
+                    "msg": message_text,
+                    "color": payload.get("color", "#9F7AEA"),
+                    "timestamp": get_timestamp(),
+                }
+                logger.info(
+                    "assistant_chat_sent peer=%s email=%s room=%s message_id=%s",
+                    peer,
+                    authenticated_user["email"],
+                    group_id,
+                    assistant_payload["message_id"],
+                )
+                await broadcast(group_id, assistant_payload, sender_writer=None)
+                await protocol.send_message(writer, {
+                    "action": "assistant_chat_ack",
+                    "group_id": group_id,
+                    "message_id": assistant_payload["message_id"],
+                    "timestamp": assistant_payload["timestamp"],
                 })
 
             elif action == "file" and current_group_id:

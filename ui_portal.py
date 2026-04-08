@@ -14,6 +14,9 @@ from PyQt6.QtGui import QCursor, QDesktopServices
 from qasync import asyncSlot
 
 import file_client
+from call_ai_state import CallTranscriptStore
+import database
+from ai_service import generate_call_summary, generate_chat_reply
 from attachment_security import validate_attachment_filename
 from media_engine import (
     enumerate_audio_input_devices,
@@ -46,8 +49,23 @@ class PortalWidget(QWidget):
         self._connecting_group_id = None
         self.current_video_device_preferences = None
         self.device_selection_dialog = None
+        self.ai_history = []
+        self.ai_request_in_flight = False
+        self.ai_default_placeholder = "Ask Groq AI..."
+        self.call_transcript_store = CallTranscriptStore()
+        self.current_call_room_id = None
 
         self._setup_ui()
+
+    AI_ROOM_ID = "Groq AI"
+    AI_TRIGGER_PREFIX = "@ai"
+    GROUP_AI_CONTEXT_LIMIT = 12
+    CALL_SUMMARY_TRIGGER_PATTERNS = (
+        "summarize the call",
+        "summarise the call",
+        "call summary",
+        "summary of the call",
+    )
 
     def initialize_user(self, username, email, db_groups, session_token):
         self.username = username
@@ -60,6 +78,7 @@ class PortalWidget(QWidget):
             if gid not in self.groups_data:
                 self.groups_data[gid] = gname
                 self._add_group_btn_ui(gid, gname)
+        asyncio.create_task(self._load_ai_history())
         self._switch_group("global-lobby-001", force=True)
 
     def _setup_ui(self):
@@ -278,6 +297,8 @@ class PortalWidget(QWidget):
             return
         if status_type == "error":
             self._connecting_group_id = None
+            if self.active_group_id == "Groq AI" and msg in {"Disconnected from server.", "Connection Lost."}:
+                return
             self._mark_pending_messages_failed(msg)
             self._show_error(msg)
 
@@ -414,7 +435,7 @@ class PortalWidget(QWidget):
             return
 
         self.active_group_id = group_id
-        self.active_group_name = self.groups_data.get(group_id, "Unknown") if group_id != "Groq AI" else "Groq AI"
+        self.active_group_name = self.groups_data.get(group_id, "Unknown") if group_id != self.AI_ROOM_ID else "Groq AI"
 
         for btn in self.group_buttons.values():
             btn.setProperty("active", False)
@@ -427,7 +448,7 @@ class PortalWidget(QWidget):
         self.chat_display.clear()
         self._update_sidebar_ui()
 
-        if group_id != "Groq AI":
+        if group_id != self.AI_ROOM_ID:
             self.btn_join_video.show()
             self._connecting_group_id = group_id
             asyncio.create_task(self.net_client.connect_to_group(
@@ -437,14 +458,94 @@ class PortalWidget(QWidget):
             self.btn_join_video.hide()
             self._connecting_group_id = None
             self.net_client.disconnect()
+            self._render_ai_history()
 
     def _update_sidebar_ui(self):
-        if self.active_group_id == "Groq AI":
+        if self.active_group_id == self.AI_ROOM_ID:
             self.chat_header.setText("GROQ AI ASSISTANT")
-            self.chat_input.setPlaceholderText("Ask Groq AI...")
+            self.chat_input.setPlaceholderText(self.ai_default_placeholder)
         else:
             self.chat_header.setText(f"GROUP CHAT: {self.active_group_name}")
             self.chat_input.setPlaceholderText("Enter message...")
+
+    def _set_ai_busy(self, is_busy: bool):
+        self.ai_request_in_flight = is_busy
+        if self.active_group_id == self.AI_ROOM_ID:
+            self.chat_input.setDisabled(is_busy)
+            self.send_btn.setDisabled(is_busy)
+            if is_busy:
+                self.chat_input.setPlaceholderText("Groq AI is thinking...")
+            else:
+                self.chat_input.setPlaceholderText(self.ai_default_placeholder)
+
+    async def _load_ai_history(self):
+        if not self.pending_email:
+            return
+        await database.init_db()
+        rows = await database.get_recent_ai_messages(self.pending_email)
+        self.ai_history = [{"role": row["role"], "content": row["content"]} for row in rows]
+        if self.active_group_id == "Groq AI":
+            self._render_ai_history()
+
+    def _render_ai_history(self):
+        if self.active_group_id != self.AI_ROOM_ID:
+            return
+
+        self.chat_display.clear()
+        for entry in self.ai_history:
+            role = entry.get("role")
+            content = entry.get("content", "")
+            if role == "user":
+                self._add_chat_msg(self.username, content, "#63B3ED")
+            elif role == "assistant":
+                self._add_chat_msg("Groq", content, "#9F7AEA")
+
+    async def _build_group_ai_history(self, group_id: str):
+        if group_id in (None, self.AI_ROOM_ID):
+            return []
+
+        rows = await database.get_recent_messages(group_id, limit=self.GROUP_AI_CONTEXT_LIMIT)
+        history = []
+        for row in rows:
+            sender = row.get("sender", "User")
+            message_text = row.get("msg", "")
+            if sender == "Groq":
+                history.append({"role": "assistant", "content": message_text})
+            else:
+                history.append({"role": "user", "content": f"{sender}: {message_text}"})
+        return history
+
+    def _extract_ai_prompt(self, message_text: str) -> str:
+        normalized_text = message_text.strip()
+        if not normalized_text.lower().startswith(self.AI_TRIGGER_PREFIX):
+            return ""
+
+        prompt_text = normalized_text[len(self.AI_TRIGGER_PREFIX):].lstrip(" ,:;-")
+        return prompt_text.strip()
+
+    def _is_call_summary_request(self, prompt_text: str) -> bool:
+        normalized_prompt = prompt_text.lower()
+        return any(pattern in normalized_prompt for pattern in self.CALL_SUMMARY_TRIGGER_PATTERNS)
+
+    async def _handle_group_ai_request(self, group_id: str, prompt_text: str):
+        self._set_ai_busy(True)
+        try:
+            if self._is_call_summary_request(prompt_text):
+                transcript_context = self.call_transcript_store.format_recent_context(group_id)
+                if not transcript_context:
+                    self._show_error("There is no call transcript available yet for this room.", popup=True)
+                    return
+                ai_reply = await generate_call_summary(transcript_context)
+            else:
+                ai_history = await self._build_group_ai_history(group_id)
+                ai_reply = await generate_chat_reply(ai_history, prompt_text)
+            ai_message_id = await self.net_client.send_assistant_chat(group_id, ai_reply, "#9F7AEA")
+            if not ai_message_id:
+                self._show_error("Groq AI failed to post its reply to the group.", popup=True)
+        except Exception as error:
+            self._show_error(f"Groq AI request failed: {error}", popup=True)
+        finally:
+            self._set_ai_busy(False)
 
     @asyncSlot()
     async def _open_file_dialog(self):
@@ -533,8 +634,24 @@ class PortalWidget(QWidget):
         if txt:
             local_time = datetime.now().strftime("%H:%M")
             self.chat_input.clear()
-            if self.active_group_id == "Groq AI":
-                self._add_chat_msg("Groq", f"I received: '{txt}'", "#9F7AEA", local_time)
+            if self.active_group_id == self.AI_ROOM_ID:
+                if self.ai_request_in_flight:
+                    self._show_error("Groq AI is still answering the previous request.", popup=True)
+                    return
+                self._set_ai_busy(True)
+                self._add_chat_msg(self.username, txt, "#63B3ED", local_time)
+                try:
+                    ai_reply = await generate_chat_reply(self.ai_history, txt)
+                    self.ai_history.append({"role": "user", "content": txt})
+                    self.ai_history.append({"role": "assistant", "content": ai_reply})
+                    timestamp = datetime.now().isoformat(timespec="seconds")
+                    await database.save_ai_message(self.pending_email, "user", txt, timestamp)
+                    await database.save_ai_message(self.pending_email, "assistant", ai_reply, timestamp)
+                    self._add_chat_msg("Groq", ai_reply, "#9F7AEA", datetime.now().strftime("%H:%M"))
+                except Exception as e:
+                    self._show_error(f"Groq AI request failed: {e}", popup=True)
+                finally:
+                    self._set_ai_busy(False)
             else:
                 message_id = await self.net_client.send_chat(sender=self.username, msg=txt)
                 if message_id:
@@ -543,6 +660,13 @@ class PortalWidget(QWidget):
                         "msg": txt
                     }
                     self._add_chat_msg(self.username, txt, "#63B3ED", local_time)
+                    ai_prompt = self._extract_ai_prompt(txt)
+                    if ai_prompt:
+                        if self.ai_request_in_flight:
+                            self._show_error("Groq AI is still answering the previous request.", popup=True)
+                            return
+                        target_group_id = self.active_group_id
+                        asyncio.create_task(self._handle_group_ai_request(target_group_id, ai_prompt))
                 else:
                     self._add_chat_msg("System Error", f"Failed to send: {txt}", "#E53E3E", local_time)
 
@@ -639,6 +763,7 @@ class PortalWidget(QWidget):
         if hasattr(self, 'webrtc_thread') and self.webrtc_thread is not None:
             self.webrtc_thread.stop()
             self.webrtc_thread = None # Clears it out so we can start a new call later!
+        self.current_call_room_id = None
 
     def _open_video_window(self):
         print(f"Opening Video Window for Room: {self.active_group_name}")
@@ -681,6 +806,7 @@ class PortalWidget(QWidget):
             return
 
         print(f"Launching Video Call for room: {self.active_group_id}")
+        self.current_call_room_id = self.active_group_id
 
         camera_devices = enumerate_camera_devices()
         microphone_devices = enumerate_audio_input_devices()
@@ -732,6 +858,7 @@ class PortalWidget(QWidget):
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals,
             device_preferences=device_preferences,
+            transcript_callback=self.video_window.signals.transcript_chunk.emit,
         )
         self._attach_video_window_handlers()
 
@@ -833,6 +960,7 @@ class PortalWidget(QWidget):
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals,
             device_preferences=device_preferences,
+            transcript_callback=self.video_window.signals.transcript_chunk.emit,
         )
         self.webrtc_thread.start()
         self._clear_device_dialog_reference()
@@ -860,6 +988,7 @@ class PortalWidget(QWidget):
         self.video_window.signals.cam_toggled.connect(self._forward_cam_toggle)
         self.video_window.signals.mic_toggled.connect(self._forward_mic_toggle)
         self.video_window.signals.devices_requested.connect(self._change_video_devices)
+        self.video_window.signals.transcript_chunk.connect(self._handle_call_transcript_chunk)
         self.video_window._handlers_attached = True
 
     def _forward_cam_toggle(self, is_muted):
@@ -869,3 +998,7 @@ class PortalWidget(QWidget):
     def _forward_mic_toggle(self, is_muted):
         if hasattr(self, "webrtc_thread") and self.webrtc_thread is not None:
             self.webrtc_thread.set_mic_muted(is_muted)
+
+    def _handle_call_transcript_chunk(self, speaker: str, text: str, timestamp: str):
+        if self.current_call_room_id:
+            self.call_transcript_store.append_entry(self.current_call_room_id, speaker, text, timestamp)

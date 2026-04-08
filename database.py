@@ -5,6 +5,7 @@ import time
 import uuid
 
 DB_NAME = "vcp_local.db"
+AI_HISTORY_LIMIT = 24
 
 
 async def init_db():
@@ -52,6 +53,15 @@ async def init_db():
                 token TEXT PRIMARY KEY,
                 user_email TEXT NOT NULL,
                 expires_at REAL NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS ai_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_email TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
         """)
 
@@ -250,4 +260,44 @@ async def get_recent_messages(group_id: str, limit: int = 50):
         """, (group_id, limit))
         rows = await cursor.fetchall()
         # Reverse to put them back in chronological order
+        return [dict(row) for row in reversed(rows)]
+
+
+async def save_ai_message(user_email: str, role: str, content: str, created_at: str):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT INTO ai_messages (user_email, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (user_email, role, content, created_at),
+        )
+        await db.execute(
+            """
+            DELETE FROM ai_messages
+            WHERE user_email = ?
+              AND id NOT IN (
+                  SELECT id
+                  FROM ai_messages
+                  WHERE user_email = ?
+                  ORDER BY id DESC
+                  LIMIT ?
+              )
+            """,
+            (user_email, user_email, AI_HISTORY_LIMIT),
+        )
+        await db.commit()
+
+
+async def get_recent_ai_messages(user_email: str, limit: int = AI_HISTORY_LIMIT):
+    async with aiosqlite.connect(DB_NAME) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT role, content, created_at
+            FROM ai_messages
+            WHERE user_email = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_email, limit),
+        )
+        rows = await cursor.fetchall()
         return [dict(row) for row in reversed(rows)]

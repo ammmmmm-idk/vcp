@@ -75,6 +75,7 @@ class VideoSignals(QObject):
     devices_requested = pyqtSignal()
     peer_disconnected = pyqtSignal(str)
     error_message = pyqtSignal(str)
+    transcript_chunk = pyqtSignal(str, str, str)
 
 
 class DeviceSelectionDialog(QDialog):
