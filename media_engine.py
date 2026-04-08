@@ -46,6 +46,7 @@ AUDIO_DEVICE_LATENCY = "low"
 AUDIO_TRANSCRIPTION_SECONDS = 4
 AUDIO_TRANSCRIPTION_MIN_TEXT_LENGTH = 2
 AUDIO_TRANSCRIPTION_FRAME_COUNT = AUDIO_SAMPLE_RATE * AUDIO_TRANSCRIPTION_SECONDS
+AUDIO_TRANSCRIPTION_QUEUE_SIZE = 16
 CAMERA_PROBE_LIMIT = 6
 CAMERA_AUTO_DEVICE = "__auto__"
 NO_DEVICE_VALUE = "__none__"
@@ -377,6 +378,75 @@ class AudioPlaybackBuffer:
             self._stream = None
 
 
+class AudioTranscriptionWorker:
+    def __init__(self, target_username, transcript_callback):
+        self.target_username = target_username
+        self.transcript_callback = transcript_callback
+        self._queue = asyncio.Queue(maxsize=AUDIO_TRANSCRIPTION_QUEUE_SIZE)
+        self._samples = []
+        self._sample_total = 0
+        self._sentinel = object()
+        self._task = asyncio.create_task(self._run())
+
+    def enqueue(self, samples: np.ndarray):
+        if self._queue.full():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._queue.put_nowait(samples.copy(order="C"))
+        except asyncio.QueueFull:
+            pass
+
+    async def _run(self):
+        try:
+            while True:
+                item = await self._queue.get()
+                if item is self._sentinel:
+                    break
+                self._samples.append(item)
+                self._sample_total += item.shape[0]
+                if self._sample_total >= AUDIO_TRANSCRIPTION_FRAME_COUNT:
+                    await self._flush()
+        finally:
+            await self._flush()
+
+    async def _flush(self):
+        if self._sample_total <= 0:
+            self._samples = []
+            self._sample_total = 0
+            return
+
+        merged_samples = np.concatenate(self._samples, axis=0)
+        wav_bytes = pcm_to_wav_bytes(
+            merged_samples.astype(np.int16).tobytes(),
+            AUDIO_SAMPLE_RATE,
+            AUDIO_CHANNEL_COUNT,
+        )
+        self._samples = []
+        self._sample_total = 0
+
+        try:
+            transcript_text = await transcribe_wav_bytes(wav_bytes)
+            if transcript_text and len(transcript_text.strip()) >= AUDIO_TRANSCRIPTION_MIN_TEXT_LENGTH:
+                timestamp = datetime.now().isoformat(timespec="seconds")
+                self.transcript_callback(self.target_username, transcript_text.strip(), timestamp)
+        except Exception as error:
+            print(f"Transcription for {self.target_username} failed: {error}")
+
+    async def stop(self):
+        try:
+            self._queue.put_nowait(self._sentinel)
+        except asyncio.QueueFull:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            self._queue.put_nowait(self._sentinel)
+        await self._task
+
+
 async def display_stream(track, target_username, signal_emitter):
     try:
         while True:
@@ -404,47 +474,20 @@ async def display_stream(track, target_username, signal_emitter):
 
 
 async def display_audio_stream(track, target_username, output_device, transcript_callback=None):
-    if output_device is None:
-        try:
-            while True:
-                await track.recv()
-        except Exception as e:
-            print(f"Audio stream from {target_username} stopped: {e}")
-        return
-
-    player = AudioPlaybackBuffer(
-        sample_rate=AUDIO_SAMPLE_RATE,
-        channels=AUDIO_CHANNEL_COUNT,
-        block_size=AUDIO_BLOCK_SIZE,
-        output_device=output_device,
-    )
+    player = None
+    if output_device is not None:
+        player = AudioPlaybackBuffer(
+            sample_rate=AUDIO_SAMPLE_RATE,
+            channels=AUDIO_CHANNEL_COUNT,
+            block_size=AUDIO_BLOCK_SIZE,
+            output_device=output_device,
+        )
     resampler = AudioResampler(
         format=AUDIO_OUTPUT_RESAMPLE_FORMAT,
         layout=AUDIO_LAYOUT_MONO,
         rate=AUDIO_SAMPLE_RATE,
     )
-    transcript_samples = []
-    transcript_sample_total = 0
-
-    async def flush_transcript_samples():
-        nonlocal transcript_samples, transcript_sample_total
-        if transcript_sample_total <= 0 or transcript_callback is None:
-            transcript_samples = []
-            transcript_sample_total = 0
-            return
-
-        merged_samples = np.concatenate(transcript_samples, axis=0)
-        wav_bytes = pcm_to_wav_bytes(merged_samples.astype(np.int16).tobytes(), AUDIO_SAMPLE_RATE, AUDIO_CHANNEL_COUNT)
-        transcript_samples = []
-        transcript_sample_total = 0
-
-        try:
-            transcript_text = await transcribe_wav_bytes(wav_bytes)
-            if transcript_text and len(transcript_text.strip()) >= AUDIO_TRANSCRIPTION_MIN_TEXT_LENGTH:
-                timestamp = datetime.now().isoformat(timespec="seconds")
-                transcript_callback(target_username, transcript_text.strip(), timestamp)
-        except Exception as error:
-            print(f"Transcription for {target_username} failed: {error}")
+    transcriber = AudioTranscriptionWorker(target_username, transcript_callback) if transcript_callback else None
 
     try:
         while True:
@@ -454,14 +497,14 @@ async def display_audio_stream(track, target_username, output_device, transcript
                 if audio.ndim == 1:
                     audio = audio.reshape(1, -1)
                 samples = audio.T.copy(order="C")
-                player.write(samples)
-                if transcript_callback is not None:
-                    transcript_samples.append(samples)
-                    transcript_sample_total += samples.shape[0]
-                    if transcript_sample_total >= AUDIO_TRANSCRIPTION_FRAME_COUNT:
-                        await flush_transcript_samples()
+                if player is not None:
+                    player.write(samples)
+                if transcriber is not None:
+                    transcriber.enqueue(samples)
     except Exception as e:
         print(f"Audio stream from {target_username} stopped: {e}")
     finally:
-        await flush_transcript_samples()
-        player.stop()
+        if transcriber is not None:
+            await transcriber.stop()
+        if player is not None:
+            player.stop()
