@@ -434,7 +434,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                 assistant_payload = {
                     "action": "chat",
-                    "message_id": str(uuid.uuid4()),
+                    "message_id": payload.get("message_id") or str(uuid.uuid4()),
                     "sender": payload.get("sender", "Groq"),
                     "msg": message_text,
                     "color": payload.get("color", "#9F7AEA"),

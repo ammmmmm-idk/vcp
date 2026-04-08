@@ -1,6 +1,7 @@
 import asyncio
 import fractions
 import queue
+import time
 from datetime import datetime
 
 import cv2
@@ -43,10 +44,13 @@ AUDIO_INPUT_QUEUE_SIZE = 20
 AUDIO_OUTPUT_QUEUE_SIZE = 100
 AUDIO_OUTPUT_RESAMPLE_FORMAT = "s16"
 AUDIO_DEVICE_LATENCY = "low"
-AUDIO_TRANSCRIPTION_SECONDS = 4
+AUDIO_TRANSCRIPTION_SECONDS = 12
 AUDIO_TRANSCRIPTION_MIN_TEXT_LENGTH = 2
 AUDIO_TRANSCRIPTION_FRAME_COUNT = AUDIO_SAMPLE_RATE * AUDIO_TRANSCRIPTION_SECONDS
 AUDIO_TRANSCRIPTION_QUEUE_SIZE = 16
+AUDIO_TRANSCRIPTION_COOLDOWN_SECONDS = 20
+AUDIO_TRANSCRIPTION_BACKOFF_SECONDS = 60
+AUDIO_TRANSCRIPTION_SILENCE_THRESHOLD = 250
 CAMERA_PROBE_LIMIT = 6
 CAMERA_AUTO_DEVICE = "__auto__"
 NO_DEVICE_VALUE = "__none__"
@@ -387,6 +391,7 @@ class AudioTranscriptionWorker:
         self._sample_total = 0
         self._sentinel = object()
         self._task = asyncio.create_task(self._run())
+        self._backoff_until = 0.0
 
     def enqueue(self, samples: np.ndarray):
         if self._queue.full():
@@ -419,13 +424,18 @@ class AudioTranscriptionWorker:
             return
 
         merged_samples = np.concatenate(self._samples, axis=0)
+        self._samples = []
+        self._sample_total = 0
+        if time.monotonic() < self._backoff_until:
+            return
+        if np.mean(np.abs(merged_samples.astype(np.int32))) < AUDIO_TRANSCRIPTION_SILENCE_THRESHOLD:
+            return
+
         wav_bytes = pcm_to_wav_bytes(
             merged_samples.astype(np.int16).tobytes(),
             AUDIO_SAMPLE_RATE,
             AUDIO_CHANNEL_COUNT,
         )
-        self._samples = []
-        self._sample_total = 0
 
         try:
             transcript_text = await transcribe_wav_bytes(wav_bytes)
@@ -433,6 +443,8 @@ class AudioTranscriptionWorker:
                 timestamp = datetime.now().isoformat(timespec="seconds")
                 self.transcript_callback(self.target_username, transcript_text.strip(), timestamp)
         except Exception as error:
+            if "429" in str(error):
+                self._backoff_until = time.monotonic() + AUDIO_TRANSCRIPTION_BACKOFF_SECONDS
             print(f"Transcription for {self.target_username} failed: {error}")
 
     async def stop(self):
