@@ -434,6 +434,11 @@ class PortalWidget(QWidget):
         if not force and (self.active_group_id == group_id or self._connecting_group_id == group_id):
             return
 
+        # Clear old transcript when switching groups
+        if self.current_call_room_id and self.current_call_room_id != group_id:
+            self.call_transcript_store.clear_room(self.current_call_room_id)
+            self.current_call_room_id = None
+
         self.active_group_id = group_id
         self.active_group_name = self.groups_data.get(group_id, "Unknown") if group_id != self.AI_ROOM_ID else "Groq AI"
 
@@ -531,7 +536,11 @@ class PortalWidget(QWidget):
         self._set_ai_busy(True)
         try:
             if self._is_call_summary_request(prompt_text):
+                print(f"DEBUG: Call summary requested for group_id: {group_id}")
+                print(f"DEBUG: current_call_room_id: {self.current_call_room_id}")
                 transcript_context = self.call_transcript_store.format_recent_context(group_id)
+                print(f"DEBUG: Transcript context length: {len(transcript_context)}")
+                print(f"DEBUG: Transcript context preview: {transcript_context[:200]}")
                 if not transcript_context:
                     self._show_error("There is no call transcript available yet for this room.", popup=True)
                     return
@@ -763,7 +772,7 @@ class PortalWidget(QWidget):
         if hasattr(self, 'webrtc_thread') and self.webrtc_thread is not None:
             self.webrtc_thread.stop()
             self.webrtc_thread = None # Clears it out so we can start a new call later!
-        self.current_call_room_id = None
+        # Don't clear current_call_room_id - keep transcript available for summaries after call ends
 
     def _open_video_window(self):
         print(f"Opening Video Window for Room: {self.active_group_name}")
@@ -993,5 +1002,7 @@ class PortalWidget(QWidget):
             self.webrtc_thread.set_mic_muted(is_muted)
 
     def _handle_call_transcript_chunk(self, speaker: str, text: str, timestamp: str):
+        print(f"DEBUG: Transcript chunk received - Speaker: {speaker}, Text: {text[:50]}, Room: {self.current_call_room_id}")
         if self.current_call_room_id:
             self.call_transcript_store.append_entry(self.current_call_room_id, speaker, text, timestamp)
+            print(f"DEBUG: Transcript stored. Total entries: {len(self.call_transcript_store.get_recent_entries(self.current_call_room_id))}")
