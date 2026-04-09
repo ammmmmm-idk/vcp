@@ -256,10 +256,11 @@ class PortalWidget(QWidget):
                 msg_text = msg_data["msg"]
                 if msg_text.startswith("__FILE__:"):
                     filename = msg_text.split(":", 1)[1]
-                    asyncio.create_task(self._handle_file_message(
+                    # Show file immediately without async download for proper ordering
+                    self._show_file_message_sync(
                         msg_data["sender"], filename,
                         msg_data.get("color", "#E2E8F0"), msg_data.get("timestamp", "")
-                    ))
+                    )
                 else:
                     self._add_chat_msg(msg_data["sender"], msg_text, msg_data.get("color", "#E2E8F0"),
                                        msg_data.get("timestamp", ""))
@@ -514,6 +515,12 @@ class PortalWidget(QWidget):
         for row in rows:
             sender = row.get("sender", "User")
             message_text = row.get("msg", "")
+
+            # Handle file messages
+            if message_text.startswith("__FILE__:"):
+                filename = message_text.split(":", 1)[1]
+                message_text = f"[Sent file: {filename}]"
+
             if sender == "Groq":
                 history.append({"role": "assistant", "content": message_text})
             else:
@@ -536,11 +543,7 @@ class PortalWidget(QWidget):
         self._set_ai_busy(True)
         try:
             if self._is_call_summary_request(prompt_text):
-                print(f"DEBUG: Call summary requested for group_id: {group_id}")
-                print(f"DEBUG: current_call_room_id: {self.current_call_room_id}")
                 transcript_context = self.call_transcript_store.format_recent_context(group_id)
-                print(f"DEBUG: Transcript context length: {len(transcript_context)}")
-                print(f"DEBUG: Transcript context preview: {transcript_context[:200]}")
                 if not transcript_context:
                     self._show_error("There is no call transcript available yet for this room.", popup=True)
                     return
@@ -556,11 +559,11 @@ class PortalWidget(QWidget):
         finally:
             self._set_ai_busy(False)
 
-    @asyncSlot()
-    async def _open_file_dialog(self):
+    def _open_file_dialog(self):
+        """Non-async version to avoid event loop conflicts"""
+        # Synchronous dialog call
         fname, _ = QFileDialog.getOpenFileName(self, "Select File", "", "All Files (*)")
         if fname:
-            local_time = datetime.now().strftime("%H:%M")
             filename = os.path.basename(fname)
             is_valid, error_message = validate_attachment_filename(filename)
             if not is_valid:
@@ -572,17 +575,106 @@ class PortalWidget(QWidget):
                     popup=True
                 )
                 return
-            self._add_chat_msg("System", f"⏳ Uploading {filename}...", "#A0AEC0", local_time)
-            upload_success = await self.net_client.send_file(self.username, fname)
-            if not upload_success:
-                self._add_chat_msg("System", f"{filename} upload failed.", "#E53E3E",
-                                   datetime.now().strftime("%H:%M"))
-                return
-            await self.net_client.send_file_notification(self.username, filename)
-            self._add_chat_msg("System", f"✅ {filename} uploaded successfully!", "#48BB78",
+
+            # Schedule the actual upload as a separate async task
+            asyncio.create_task(self._execute_upload(fname, filename))
+
+    async def _execute_upload(self, fpath: str, filename: str):
+        """Actually perform the upload (async part)"""
+        upload_success = await self.net_client.send_file(self.username, fpath)
+
+        if not upload_success:
+            self._add_chat_msg("System", f"❌ {filename} upload failed.", "#E53E3E",
                                datetime.now().strftime("%H:%M"))
+            return
+
+        # On success, just send the file notification (shows download link)
+        await self.net_client.send_file_notification(self.username, filename)
+
+    def _show_file_message_sync(self, sender: str, filename: str, color: str, timestamp: str):
+        """Synchronous version for history loading - shows placeholder for images, link for others"""
+        ext = os.path.splitext(filename)[1].lower()
+        safe_filename = html.escape(filename)
+        display_time = self._format_timestamp(timestamp)
+        time_str = f"<span style='color:#718096; font-size:10px;'>[{display_time}]</span> " if display_time else ""
+        safe_sender = html.escape(str(sender))
+
+        # For images, show placeholder immediately and schedule download
+        if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
+            placeholder_id = f"img-placeholder-{hash(filename + timestamp)}"
+            placeholder_html = f'''<div style='margin:5px;' id='{placeholder_id}'>
+            <span style='color:#718096; font-size:10px;'>{time_str}</span> <b style='color:{color};'>{safe_sender}:</b>
+            <div style="background-color:#2D3748; padding:10px; border-radius:5px; margin-top:5px; display:inline-block;">
+                <i>🖼️ Loading image: {safe_filename}...</i>
+            </div></div><p style='background-color:transparent;'></p>'''
+            self.chat_display.append(placeholder_html)
+            # Schedule async download to replace placeholder
+            asyncio.create_task(self._download_and_display_image(sender, filename, color, timestamp, placeholder_id))
+            return
+
+        # For non-images, show download link immediately
+        icon = "🎥 Video" if ext in ['.mp4', '.mov', '.avi', '.mkv'] else "📄 File"
+        file_html = f'''<div style='margin:5px;'>
+        <span style='color:#718096; font-size:10px;'>{time_str}</span> <b style='color:{color};'>{safe_sender}:</b>
+        <div style="background-color:#2D3748; padding:10px; border-radius:5px; margin-top:5px; display:inline-block;">
+            <b>{icon}:</b> {safe_filename}<br>
+            <a href="download://{filename}" style="color:#48BB78; text-decoration:none; font-weight:bold;">⬇️ Click here to Download & Open</a>
+        </div></div><p style='background-color:transparent;'></p>'''
+        self.chat_display.append(file_html)
+        # Auto-scroll to bottom
+        self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+
+    async def _download_and_display_image(self, sender: str, filename: str, color: str, timestamp: str, placeholder_id: str):
+        """Download image and replace placeholder with actual image"""
+        safe_filename = html.escape(filename)
+        local_path = await file_client.download_file(filename)
+
+        if local_path:
+            display_time = self._format_timestamp(timestamp)
+            time_str = f"<span style='color:#718096; font-size:10px;'>[{display_time}]</span> " if display_time else ""
+            safe_sender = html.escape(str(sender))
+            file_uri = QUrl.fromLocalFile(local_path).toString()
+
+            # Replace placeholder with actual image
+            html_content = self.chat_display.toHtml()
+            import re
+
+            # QTextBrowser structure from debug output:
+            # <p><a name="id"></a>timestamp sender: </p>
+            # <p style="background-color:#2d3748">🖼️ Loading image: filename...</p>
+            # <p style="background-color:transparent"></p>
+
+            # More flexible pattern - account for any whitespace and style ordering
+            placeholder_pattern = (
+                f'<p[^>]*>\\s*<a\\s+name="{re.escape(placeholder_id)}"[^>]*></a>.*?</p>\\s*'  # First paragraph
+                f'<p\\s+[^>]*background-color\\s*:\\s*#2d3748[^>]*>.*?</p>\\s*'  # Loading message (flexible whitespace)
+                f'<p\\s+[^>]*background-color\\s*:\\s*transparent[^>]*></p>'  # Reset paragraph
+            )
+
+            image_html = f'''<p style="margin-top:5px; margin-bottom:5px; margin-left:5px; margin-right:5px;">
+            <span style="font-size:10px; color:#718096;">{time_str}</span><span style="font-weight:700; color:{color};">{safe_sender}:</span>
+            <br/><img src="{file_uri}" width="200" style="border-radius: 8px;"/><br/><i>{safe_filename}</i>
+            </p><p style="background-color:transparent;"></p>'''
+
+            new_html = re.sub(placeholder_pattern, image_html, html_content, flags=re.DOTALL | re.IGNORECASE)
+
+            if new_html == html_content:
+                # Fallback: Try simpler pattern without the reset paragraph
+                simpler_pattern = (
+                    f'<p[^>]*>\\s*<a\\s+name="{re.escape(placeholder_id)}"[^>]*></a>.*?</p>\\s*'
+                    f'<p\\s+[^>]*background-color\\s*:\\s*#2d3748[^>]*>.*?</p>'
+                )
+                new_html = re.sub(simpler_pattern, image_html.replace('<p style="background-color:transparent;"></p>', ''),
+                                 html_content, flags=re.DOTALL | re.IGNORECASE)
+
+            if new_html != html_content:
+                self.chat_display.setHtml(new_html)
+                self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+            else:
+                print(f"Warning: Failed to replace placeholder {placeholder_id} for image {filename}")
 
     async def _handle_file_message(self, sender: str, filename: str, color: str, timestamp: str):
+        """Async version for live incoming files - downloads images"""
         ext = os.path.splitext(filename)[1].lower()
         safe_filename = html.escape(filename)
         if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
@@ -594,30 +686,38 @@ class PortalWidget(QWidget):
             else:
                 self._add_chat_msg(sender, f"❌ [Failed to load image: {filename}]", "red", timestamp)
         else:
-            icon = "🎥 Video" if ext in ['.mp4', '.mov', '.avi', '.mkv'] else "📄 File"
-            file_html = f'''
-            <div style="background-color:#2D3748; padding:10px; border-radius:5px; margin-top:5px; display:inline-block;">
-                <b>{icon}:</b> {safe_filename}<br>
-                <a href="download://{filename}" style="color:#48BB78; text-decoration:none; font-weight:bold;">⬇️ Click here to Download & Open</a>
-            </div>'''
-            self._add_raw_html(sender, file_html, color, timestamp)
+            # For non-image files, just show the download link
+            self._show_file_message_sync(sender, filename, color, timestamp)
 
-    async def _manual_download_task(self, filename: str):
+    def _manual_download_task(self, filename: str):
+        """Non-async version to avoid event loop conflicts"""
         filename = os.path.basename(filename)
         downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
         default_path = os.path.join(downloads_dir, filename).replace("\\", "/")
         ext = os.path.splitext(filename)[1]
 
-        save_path, _ = QFileDialog.getSaveFileName(self, "Save File As...", default_path,
-                                                   f"Files (*{ext});;All Files (*)",
-                                                   options=QFileDialog.Option.DontUseNativeDialog)
+        # Synchronous dialog call - this is fine, it returns immediately when user chooses
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Save File As...", default_path,
+            f"Files (*{ext});;All Files (*)",
+            options=QFileDialog.Option.DontUseNativeDialog
+        )
+
         if save_path:
-            local_time = datetime.now().strftime("%H:%M")
-            self._add_chat_msg("System", f"⏳ מוריד: {filename}...", "#A0AEC0", local_time)
-            success = await file_client.download_file(filename, destination=save_path)
-            if success:
-                self._add_chat_msg("System", f"✅ נשמר בהצלחה!", "#48BB78", local_time)
-                QDesktopServices.openUrl(QUrl.fromLocalFile(save_path))
+            # Schedule the actual download as a separate async task
+            asyncio.create_task(self._execute_download(filename, save_path))
+
+    async def _execute_download(self, filename: str, save_path: str):
+        """Actually perform the download (async part)"""
+        local_time = datetime.now().strftime("%H:%M")
+        success = await file_client.download_file(filename, destination=save_path)
+
+        if success:
+            # On success, just open the file - no system message
+            QDesktopServices.openUrl(QUrl.fromLocalFile(save_path))
+        else:
+            # Only show message on failure
+            self._add_chat_msg("System", f"❌ Download failed: {filename}", "#E53E3E", local_time)
 
     def _handle_chat_link(self, url: QUrl):
         pos = self.chat_display.mapFromGlobal(QCursor.pos())
@@ -625,7 +725,7 @@ class PortalWidget(QWidget):
 
         if "download://" in raw_link:
             filename = unquote(raw_link.split("download://")[-1]).lstrip('/')
-            if filename: asyncio.create_task(self._manual_download_task(filename))
+            if filename: self._manual_download_task(filename)
         elif "video://" in raw_link:
             self._play_video(unquote(raw_link.split("video://")[-1]).lstrip('/'))
         else:
@@ -684,15 +784,33 @@ class PortalWidget(QWidget):
         time_str = f"<span style='color:#718096; font-size:10px;'>[{display_time}]</span> " if display_time else ""
         safe_sender = html.escape(str(sender))
         safe_msg = html.escape(str(msg))
-        self.chat_display.append(f"<p style='margin:5px;'>{time_str}<b style='color:{color};'>{safe_sender}:</b> {safe_msg}</p>")
+        # Use div instead of p for consistency with file messages
+        self.chat_display.append(f"<div style='margin:5px;'>{time_str}<b style='color:{color};'>{safe_sender}:</b> {safe_msg}</div>")
+        # Auto-scroll to bottom
+        self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
 
     def _add_raw_html(self, sender, html_content, color, timestamp=""):
         display_time = self._format_timestamp(timestamp)
         time_str = f"<span style='color:#718096; font-size:10px;'>[{display_time}]</span> " if display_time else ""
         safe_sender = html.escape(str(sender))
-        self.chat_display.append(f"<p style='margin:5px;'>{time_str}<b style='color:{color};'>{safe_sender}:</b></p>")
+        # Use div for consistency
+        self.chat_display.append(f"<div style='margin:5px;'>{time_str}<b style='color:{color};'>{safe_sender}:</b></div>")
         self.chat_display.insertHtml(html_content)
         self.chat_display.append("<br>")
+
+    def _remove_last_system_message(self, element_id: str):
+        """Remove a system message by its HTML element ID using JavaScript-like manipulation"""
+        try:
+            html_content = self.chat_display.toHtml()
+            # Find and remove the span with the given ID
+            import re
+            pattern = f'<span id="{re.escape(element_id)}"[^>]*>.*?</span><br>'
+            html_content = re.sub(pattern, '', html_content, flags=re.DOTALL)
+            self.chat_display.setHtml(html_content)
+            # Scroll to bottom after modification
+            self.chat_display.verticalScrollBar().setValue(self.chat_display.verticalScrollBar().maximum())
+        except Exception:
+            pass  # If removal fails, message stays visible (not critical)
 
     def _handle_message_ack(self, message_id, timestamp):
         if not message_id:
@@ -1002,7 +1120,5 @@ class PortalWidget(QWidget):
             self.webrtc_thread.set_mic_muted(is_muted)
 
     def _handle_call_transcript_chunk(self, speaker: str, text: str, timestamp: str):
-        print(f"DEBUG: Transcript chunk received - Speaker: {speaker}, Text: {text[:50]}, Room: {self.current_call_room_id}")
         if self.current_call_room_id:
             self.call_transcript_store.append_entry(self.current_call_room_id, speaker, text, timestamp)
-            print(f"DEBUG: Transcript stored. Total entries: {len(self.call_transcript_store.get_recent_entries(self.current_call_room_id))}")
