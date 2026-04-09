@@ -207,6 +207,10 @@ class NetworkClient(QObject):
 
 def main():
     """The true entry point of the VCP Client Application."""
+    # Suppress Python 3.13 asyncio task switching RuntimeError
+    import logging
+    logging.getLogger('qasync._QEventLoop').setLevel(logging.CRITICAL)
+
     app = QApplication(sys.argv)
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)

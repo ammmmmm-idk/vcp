@@ -2,6 +2,7 @@
 import os
 import asyncio
 import html
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs, quote, unquote
 
@@ -54,6 +55,7 @@ class PortalWidget(QWidget):
         self.ai_default_placeholder = "Ask Groq AI..."
         self.call_transcript_store = CallTranscriptStore()
         self.current_call_room_id = None
+        self._ai_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="AI-Request")
 
         self._setup_ui()
 
@@ -511,6 +513,9 @@ class PortalWidget(QWidget):
             return []
 
         rows = await database.get_recent_messages(group_id, limit=self.GROUP_AI_CONTEXT_LIMIT)
+        # Yield to event loop after database query
+        await asyncio.sleep(0)
+
         history = []
         for row in rows:
             sender = row.get("sender", "User")
@@ -525,6 +530,9 @@ class PortalWidget(QWidget):
                 history.append({"role": "assistant", "content": message_text})
             else:
                 history.append({"role": "user", "content": f"{sender}: {message_text}"})
+
+        # Yield before returning to allow event loop switching
+        await asyncio.sleep(0)
         return history
 
     def _extract_ai_prompt(self, message_text: str) -> str:
@@ -542,15 +550,31 @@ class PortalWidget(QWidget):
     async def _handle_group_ai_request(self, group_id: str, prompt_text: str):
         self._set_ai_busy(True)
         try:
+            # Run AI generation in a dedicated thread pool to avoid blocking event loop
+            loop = asyncio.get_event_loop()
+
             if self._is_call_summary_request(prompt_text):
                 transcript_context = self.call_transcript_store.format_recent_context(group_id)
                 if not transcript_context:
                     self._show_error("There is no call transcript available yet for this room.", popup=True)
                     return
-                ai_reply = await generate_call_summary(transcript_context)
+
+                # Run blocking AI call in executor thread
+                import functools
+                ai_reply = await loop.run_in_executor(
+                    self._ai_executor,
+                    functools.partial(self._sync_generate_call_summary, transcript_context)
+                )
             else:
                 ai_history = await self._build_group_ai_history(group_id)
-                ai_reply = await generate_chat_reply(ai_history, prompt_text)
+
+                # Run blocking AI call in executor thread
+                import functools
+                ai_reply = await loop.run_in_executor(
+                    self._ai_executor,
+                    functools.partial(self._sync_generate_chat_reply, ai_history, prompt_text)
+                )
+
             ai_message_id = await self.net_client.send_assistant_chat(group_id, ai_reply, "#9F7AEA")
             if not ai_message_id:
                 self._show_error("Groq AI failed to post its reply to the group.", popup=True)
@@ -558,6 +582,16 @@ class PortalWidget(QWidget):
             self._show_error(f"Groq AI request failed: {error}", popup=True)
         finally:
             self._set_ai_busy(False)
+
+    def _sync_generate_call_summary(self, transcript_context):
+        """Synchronous wrapper for generate_call_summary - runs in executor thread"""
+        import asyncio
+        return asyncio.run(generate_call_summary(transcript_context))
+
+    def _sync_generate_chat_reply(self, ai_history, prompt_text):
+        """Synchronous wrapper for generate_chat_reply - runs in executor thread"""
+        import asyncio
+        return asyncio.run(generate_chat_reply(ai_history, prompt_text))
 
     def _open_file_dialog(self):
         """Non-async version to avoid event loop conflicts"""
@@ -1120,5 +1154,7 @@ class PortalWidget(QWidget):
             self.webrtc_thread.set_mic_muted(is_muted)
 
     def _handle_call_transcript_chunk(self, speaker: str, text: str, timestamp: str):
+        print(f"Transcription chunk received: speaker={speaker}, text={text}, room={self.current_call_room_id}")
         if self.current_call_room_id:
             self.call_transcript_store.append_entry(self.current_call_room_id, speaker, text, timestamp)
+            print(f"Transcript stored for room {self.current_call_room_id}")

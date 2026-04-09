@@ -267,6 +267,10 @@ async def generate_chat_reply(recent_messages, user_message):
     search_context = ""
     search_sources = ""
     include_sources = _user_requested_sources(user_message)
+
+    # Yield to event loop before starting work
+    await asyncio.sleep(0)
+
     if _should_use_web_search(user_message):
         logger.info("ai_search_requested prompt=%r", user_message)
         try:
@@ -279,7 +283,12 @@ async def generate_chat_reply(recent_messages, user_message):
             logger.warning("ai_search_failed prompt=%r error=%s", user_message, error)
             search_context = SEARCH_FALLBACK_NOTICE
 
+    # Yield before making blocking API call
+    await asyncio.sleep(0)
     ai_reply = await asyncio.to_thread(_request_chat_completion, recent_messages, user_message, search_context)
+    # Yield after API call completes
+    await asyncio.sleep(0)
+
     if search_sources:
         ai_reply = f"{ai_reply}\n\n{search_sources}"
     logger.info("ai_reply_generated prompt=%r used_search=%s", user_message, bool(search_context))
@@ -288,6 +297,10 @@ async def generate_chat_reply(recent_messages, user_message):
 
 async def generate_call_summary(transcript_text: str):
     logger.info("ai_call_summary_requested transcript_length=%d", len(transcript_text))
+    # Yield before making blocking API call
+    await asyncio.sleep(0)
     summary = await asyncio.to_thread(_request_call_summary, transcript_text)
+    # Yield after API call completes
+    await asyncio.sleep(0)
     logger.info("ai_call_summary_generated transcript_length=%d", len(transcript_text))
     return summary
