@@ -7,6 +7,8 @@ from typing import Dict
 import time
 import uuid
 import secrets
+import ssl
+from pathlib import Path
 import protocol
 import database
 from auth_service import (
@@ -22,6 +24,14 @@ from config import (
     MAX_GROUP_NAME_LENGTH,
     MAX_MESSAGE_LENGTH,
     SERVER_BIND_HOST,
+)
+from validators import (
+    validate_email,
+    validate_group_name,
+    validate_message,
+    validate_username,
+    sanitize_ai_prompt,
+    validate_password_strength,
 )
 
 # Track connections only (No more history memory!)
@@ -128,6 +138,24 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
                 if not fullname or not email or not password:
                     await send_error(writer, "Signup requires full name, email, and password.")
+                    continue
+
+                # Validate username
+                valid_name, name_error = validate_username(fullname)
+                if not valid_name:
+                    await send_error(writer, name_error)
+                    continue
+
+                # Validate email format
+                valid_email, email_error = validate_email(email)
+                if not valid_email:
+                    await send_error(writer, email_error)
+                    continue
+
+                # Validate password strength
+                valid_password, password_error = validate_password_strength(password)
+                if not valid_password:
+                    await send_error(writer, password_error)
                     continue
 
                 existing_user = await database.get_user_by_email(email)
@@ -307,11 +335,11 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     await send_error(writer, "Authenticate before creating a group.")
                     continue
                 group_name = payload.get("group_name", "").strip()
-                if not group_name:
-                    await send_error(writer, "Group name cannot be empty.")
-                    continue
-                if len(group_name) > MAX_GROUP_NAME_LENGTH:
-                    await send_error(writer, f"Group name is too long. Maximum length is {MAX_GROUP_NAME_LENGTH} characters.")
+
+                # Validate group name
+                valid_group, group_error = validate_group_name(group_name)
+                if not valid_group:
+                    await send_error(writer, group_error)
                     continue
 
                 group_id = str(uuid.uuid4())
@@ -384,12 +412,12 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     await send_error(writer, "You no longer have access to this group.")
                     continue
                 message_text = payload.get("msg", "")
-                if not message_text:
-                    await send_error(writer, "Cannot send an empty message.")
-                    continue
-                if len(message_text) > MAX_MESSAGE_LENGTH:
-                    logger.warning("chat_denied peer=%s email=%s room=%s reason=message_too_long", peer, authenticated_user["email"], current_group_id)
-                    await send_error(writer, f"Message is too long. Maximum length is {MAX_MESSAGE_LENGTH} characters.")
+
+                # Validate message
+                valid_msg, msg_error = validate_message(message_text)
+                if not valid_msg:
+                    logger.warning("chat_denied peer=%s email=%s room=%s reason=invalid_message", peer, authenticated_user["email"], current_group_id)
+                    await send_error(writer, msg_error)
                     continue
                 if is_rate_limited(writer):
                     await send_error(writer, "You are sending messages too quickly. Please slow down.")
@@ -425,12 +453,14 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     )
                     await send_error(writer, "You no longer have access to that group.")
                     continue
-                if not message_text:
-                    await send_error(writer, "Assistant message cannot be empty.")
+
+                # Validate and sanitize AI prompt
+                is_safe, sanitized_or_error = sanitize_ai_prompt(message_text)
+                if not is_safe:
+                    logger.warning("assistant_chat_denied peer=%s email=%s room=%s reason=unsafe_prompt", peer, authenticated_user["email"], group_id)
+                    await send_error(writer, sanitized_or_error)
                     continue
-                if len(message_text) > MAX_MESSAGE_LENGTH:
-                    await send_error(writer, f"Assistant message is too long. Maximum length is {MAX_MESSAGE_LENGTH} characters.")
-                    continue
+                message_text = sanitized_or_error
 
                 assistant_payload = {
                     "action": "chat",

@@ -1,4 +1,5 @@
 import aiosqlite
+import hashlib
 import os
 import secrets
 import time
@@ -6,6 +7,11 @@ import uuid
 
 DB_NAME = "vcp_local.db"
 AI_HISTORY_LIMIT = 24
+
+
+def hash_token(token: str) -> str:
+    """Hash a session token using SHA-256"""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 async def init_db():
@@ -122,24 +128,26 @@ async def get_user_by_email(email: str):
 
 async def create_chat_session(email: str, ttl_seconds: int = 3600) -> str:
     token = secrets.token_urlsafe(32)
+    token_hash = hash_token(token)  # Hash the token before storing
     expires_at = time.time() + ttl_seconds
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("DELETE FROM chat_sessions WHERE user_email = ?", (email,))
         await db.execute(
             "INSERT INTO chat_sessions (token, user_email, expires_at) VALUES (?, ?, ?)",
-            (token, email, expires_at)
+            (token_hash, email, expires_at)  # Store hashed token
         )
         await db.commit()
-    return token
+    return token  # Return plaintext token to client
 
 
 async def validate_chat_session(email: str, token: str) -> bool:
     now = time.time()
+    token_hash = hash_token(token)  # Hash incoming token before comparing
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("DELETE FROM chat_sessions WHERE expires_at <= ?", (now,))
         cursor = await db.execute(
             "SELECT 1 FROM chat_sessions WHERE user_email = ? AND token = ? LIMIT 1",
-            (email, token)
+            (email, token_hash)  # Compare with hashed token
         )
         row = await cursor.fetchone()
         await db.commit()

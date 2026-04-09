@@ -1154,7 +1154,5 @@ class PortalWidget(QWidget):
             self.webrtc_thread.set_mic_muted(is_muted)
 
     def _handle_call_transcript_chunk(self, speaker: str, text: str, timestamp: str):
-        print(f"Transcription chunk received: speaker={speaker}, text={text}, room={self.current_call_room_id}")
         if self.current_call_room_id:
             self.call_transcript_store.append_entry(self.current_call_room_id, speaker, text, timestamp)
-            print(f"Transcript stored for room {self.current_call_room_id}")
