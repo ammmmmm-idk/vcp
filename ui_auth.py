@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from qasync import asyncSlot
 
 import asyncio
+import ssl
 import protocol
 from config import SERVER_HOST, CHAT_PORT
 
@@ -200,7 +201,14 @@ class AuthWidget(QWidget):
     async def _send_auth_request(self, payload: dict):
         writer = None
         try:
-            reader, writer = await asyncio.open_connection(SERVER_HOST, CHAT_PORT)
+            # Create SSL context that doesn't verify self-signed certificates
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+            reader, writer = await asyncio.open_connection(
+                SERVER_HOST, CHAT_PORT, ssl=ssl_context
+            )
             await protocol.send_message(writer, payload)
             return await protocol.receive_message(reader)
         except Exception:

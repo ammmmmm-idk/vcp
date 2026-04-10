@@ -1,5 +1,7 @@
 # Save as: video_server.py
 import asyncio
+import ssl
+from pathlib import Path
 from protocol import receive_message, send_message
 from config import SERVER_BIND_HOST, VIDEO_SIGNALING_PORT
 
@@ -75,8 +77,21 @@ async def handle_video_signaling(reader, writer):
 
 
 async def main():
-    print("🎥 Launching Video Signaling Server on Port 8890...")
-    server = await asyncio.start_server(handle_video_signaling, SERVER_BIND_HOST, VIDEO_SIGNALING_PORT)
+    # Create SSL context for TLS encryption
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    cert_dir = Path(__file__).parent / "certs"
+    ssl_context.load_cert_chain(
+        certfile=cert_dir / "server.crt",
+        keyfile=cert_dir / "server.key"
+    )
+
+    print("[VIDEO] Launching Video Signaling Server on Port 8890 (TLS enabled)...")
+    server = await asyncio.start_server(
+        handle_video_signaling,
+        SERVER_BIND_HOST,
+        VIDEO_SIGNALING_PORT,
+        ssl=ssl_context
+    )
     async with server:
         await server.serve_forever()
 

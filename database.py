@@ -4,6 +4,7 @@ import os
 import secrets
 import time
 import uuid
+from db_encryption import encrypt_field, decrypt_field
 
 DB_NAME = "vcp_local.db"
 AI_HISTORY_LIMIT = 24
@@ -31,7 +32,8 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS groups (
                 group_id TEXT PRIMARY KEY,
                 group_name TEXT NOT NULL,
-                owner_email TEXT
+                owner_email TEXT,
+                encryption_key TEXT
             )
         """)
         # 3. User Memberships (Who is in which group)
@@ -155,15 +157,18 @@ async def validate_chat_session(email: str, token: str) -> bool:
 
 
 # --- GROUP PERSISTENCE FUNCTIONS ---
-async def create_or_update_group(group_id: str, group_name: str, owner_email: str | None = None):
+async def create_or_update_group(group_id: str, group_name: str, owner_email: str | None = None, encryption_key: str | None = None):
+    # Encrypt the group encryption key before storing
+    encrypted_key = encrypt_field(encryption_key) if encryption_key else None
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
-            INSERT INTO groups (group_id, group_name, owner_email)
-            VALUES (?, ?, ?)
+            INSERT INTO groups (group_id, group_name, owner_email, encryption_key)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(group_id) DO UPDATE SET
                 group_name = excluded.group_name,
-                owner_email = COALESCE(groups.owner_email, excluded.owner_email)
-        """, (group_id, group_name, owner_email))
+                owner_email = COALESCE(groups.owner_email, excluded.owner_email),
+                encryption_key = COALESCE(groups.encryption_key, excluded.encryption_key)
+        """, (group_id, group_name, owner_email, encrypted_key))
         await db.commit()
 
 
@@ -198,6 +203,17 @@ async def get_group_name(group_id: str) -> str:
         cursor = await db.execute("SELECT group_name FROM groups WHERE group_id = ?", (group_id,))
         row = await cursor.fetchone()
         return row[0] if row else "Unknown Group"
+
+
+async def get_group_encryption_key(group_id: str) -> str | None:
+    """Returns the base64-encoded encryption key for a group"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        cursor = await db.execute("SELECT encryption_key FROM groups WHERE group_id = ?", (group_id,))
+        row = await cursor.fetchone()
+        if row and row[0]:
+            # Decrypt the stored encryption key
+            return decrypt_field(row[0])
+        return None
 
 
 async def group_exists(group_id: str) -> bool:
@@ -250,10 +266,12 @@ async def user_has_group_access(email: str, group_id: str) -> bool:
 
 # --- MESSAGE PERSISTENCE FUNCTIONS ---
 async def save_message(group_id: str, sender: str, msg: str, color: str, timestamp: str, message_id: str | None = None):
+    # Encrypt message content before storing
+    encrypted_msg = encrypt_field(msg)
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT INTO messages (message_id, group_id, sender, msg, color, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-            (message_id or str(uuid.uuid4()), group_id, sender, msg, color, timestamp)
+            (message_id or str(uuid.uuid4()), group_id, sender, encrypted_msg, color, timestamp)
         )
         await db.commit()
 
@@ -262,13 +280,18 @@ async def get_recent_messages(group_id: str, limit: int = 50):
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("""
-            SELECT message_id, sender, msg, color, timestamp FROM messages 
-            WHERE group_id = ? 
+            SELECT message_id, sender, msg, color, timestamp FROM messages
+            WHERE group_id = ?
             ORDER BY id DESC LIMIT ?
         """, (group_id, limit))
         rows = await cursor.fetchall()
-        # Reverse to put them back in chronological order
-        return [dict(row) for row in reversed(rows)]
+        # Decrypt messages and reverse to put them back in chronological order
+        messages = []
+        for row in reversed(rows):
+            msg_dict = dict(row)
+            msg_dict["msg"] = decrypt_field(msg_dict["msg"])
+            messages.append(msg_dict)
+        return messages
 
 
 async def save_ai_message(user_email: str, role: str, content: str, created_at: str):

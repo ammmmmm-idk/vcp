@@ -2,6 +2,7 @@
 import sys
 import asyncio
 import uuid
+import ssl
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 from qasync import QEventLoop
@@ -10,6 +11,7 @@ import protocol
 from Gui import VCPApp  # Import the View
 import file_client
 from config import SERVER_HOST, CHAT_PORT
+from message_encryption import MessageEncryption
 
 
 class NetworkClient(QObject):
@@ -26,6 +28,7 @@ class NetworkClient(QObject):
         self.heartbeat_task = None
         self.auth_email = None
         self.session_token = None
+        self.cipher = None  # MessageEncryption instance for current group
 
     def set_auth_context(self, email: str, session_token: str):
         self.auth_email = email
@@ -38,7 +41,14 @@ class NetworkClient(QObject):
         self.disconnect()
 
         try:
-            self.reader, self.writer = await asyncio.open_connection(host, port)
+            # Create SSL context that doesn't verify self-signed certificates
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+            self.reader, self.writer = await asyncio.open_connection(
+                host, port, ssl=ssl_context
+            )
 
             auth_payload = {
                 "action": "auth",
@@ -80,6 +90,29 @@ class NetworkClient(QObject):
                     self.connection_status.emit("error", "Disconnected from server.")
                     break
 
+                # Handle encryption key from server
+                if payload.get("action") == "history" and payload.get("encryption_key"):
+                    encryption_key = payload["encryption_key"]
+                    if encryption_key:
+                        self.cipher = MessageEncryption.from_key_b64(encryption_key)
+
+                if payload.get("action") == "group_created" and payload.get("group", {}).get("encryption_key"):
+                    encryption_key = payload["group"]["encryption_key"]
+                    if encryption_key:
+                        self.cipher = MessageEncryption.from_key_b64(encryption_key)
+
+                # Decrypt chat messages if encrypted
+                if payload.get("action") == "chat" and self.cipher:
+                    if "encrypted" in payload and payload["encrypted"]:
+                        try:
+                            payload["msg"] = self.cipher.decrypt(
+                                payload["nonce"],
+                                payload["ciphertext"]
+                            )
+                            payload["encrypted"] = False
+                        except Exception:
+                            payload["msg"] = "[Decryption failed]"
+
                 self.message_received.emit(payload)
 
         except asyncio.CancelledError:
@@ -94,9 +127,18 @@ class NetworkClient(QObject):
                 "action": "chat",
                 "message_id": message_id,
                 "sender": sender,
-                "msg": msg,
                 "color": color
             }
+
+            # Encrypt message if cipher is available
+            if self.cipher:
+                encrypted_data = self.cipher.encrypt(msg)
+                payload["encrypted"] = True
+                payload["nonce"] = encrypted_data["nonce"]
+                payload["ciphertext"] = encrypted_data["ciphertext"]
+            else:
+                payload["msg"] = msg
+
             try:
                 await protocol.send_message(self.writer, payload)
                 return message_id
@@ -157,7 +199,12 @@ class NetworkClient(QObject):
 
         writer = None
         try:
-            reader, writer = await asyncio.open_connection(host, port)
+            # Create SSL context that doesn't verify self-signed certificates
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+            reader, writer = await asyncio.open_connection(host, port, ssl=ssl_context)
             await protocol.send_message(writer, {
                 "action": "auth",
                 "email": self.auth_email,

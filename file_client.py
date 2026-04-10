@@ -1,5 +1,6 @@
 import asyncio
 import os
+import ssl
 import protocol
 from attachment_security import validate_attachment_filename
 from config import MAX_UPLOAD_FILE_SIZE, SERVER_HOST, FILE_PORT
@@ -34,7 +35,12 @@ async def upload_file(file_path: str) -> bool:
         return False
 
     try:
-        reader, writer = await asyncio.open_connection(HOST, PORT)
+        # Create SSL context that doesn't verify self-signed certificates
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        reader, writer = await asyncio.open_connection(HOST, PORT, ssl=ssl_context)
         print(f"[*] Connected to File Server. Uploading: {filename}...")
 
         # 1. Send the Custom Header
@@ -89,7 +95,12 @@ async def download_file(filename: str, destination: str = None) -> str:
 
     writer = None
     try:
-        reader, writer = await asyncio.open_connection(HOST, PORT)
+        # Create SSL context that doesn't verify self-signed certificates
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        reader, writer = await asyncio.open_connection(HOST, PORT, ssl=ssl_context)
         print(f"[*] Connected to File Server. Requesting: {safe_filename}...")
 
         # 1. Send a request to Download (Filesize is 0 because we don't know it yet)

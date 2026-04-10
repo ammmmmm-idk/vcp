@@ -1,5 +1,6 @@
 # Save as: signaling.py
 import asyncio
+import ssl
 from protocol import send_message, receive_message
 
 class TCPSignaling:
@@ -9,7 +10,14 @@ class TCPSignaling:
 
     async def connect(self, host: str, port: int):
         """Connects to the central video switchboard."""
-        self.reader, self.writer = await asyncio.open_connection(host, port)
+        # Create SSL context that doesn't verify self-signed certificates
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+
+        self.reader, self.writer = await asyncio.open_connection(
+            host, port, ssl=ssl_context
+        )
         print(f"Connected to {host}:{port}")
 
     async def send_data(self, data: dict):

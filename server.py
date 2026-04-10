@@ -33,6 +33,8 @@ from validators import (
     sanitize_ai_prompt,
     validate_password_strength,
 )
+from message_encryption import MessageEncryption
+from protocol_validator import validate_message_schema
 
 # Track connections only (No more history memory!)
 groups: Dict[str, Dict[asyncio.StreamWriter, str]] = {}
@@ -128,6 +130,13 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             payload = await protocol.receive_message(reader)
             if payload is None:
                 break
+
+            # Validate message schema
+            is_valid, schema_error = validate_message_schema(payload)
+            if not is_valid:
+                logger.warning("protocol_violation peer=%s error=%s", peer, schema_error)
+                await send_error(writer, f"Protocol error: {schema_error}")
+                continue
 
             action = payload.get("action")
 
@@ -322,11 +331,13 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 await database.create_or_update_group(current_group_id, client_group_name)
                 official_name = await database.get_group_name(current_group_id)
                 recent_messages = await database.get_recent_messages(current_group_id, limit=50)
+                encryption_key = await database.get_group_encryption_key(current_group_id)
 
                 history_payload = {
                     "action": "history",
                     "group_name": official_name,
-                    "messages": recent_messages
+                    "messages": recent_messages,
+                    "encryption_key": encryption_key
                 }
                 await protocol.send_message(writer, history_payload)
 
@@ -343,7 +354,10 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     continue
 
                 group_id = str(uuid.uuid4())
-                await database.create_or_update_group(group_id, group_name, owner_email=authenticated_user["email"])
+                # Generate encryption key for the group
+                cipher = MessageEncryption()
+                encryption_key = cipher.get_key_b64()
+                await database.create_or_update_group(group_id, group_name, owner_email=authenticated_user["email"], encryption_key=encryption_key)
                 await database.add_user_to_group(authenticated_user["email"], group_id)
                 logger.info("group_created peer=%s email=%s room=%s", peer, authenticated_user["email"], group_id)
                 await protocol.send_message(writer, {
@@ -351,6 +365,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     "group": {
                         "group_id": group_id,
                         "group_name": group_name,
+                        "encryption_key": encryption_key
                     }
                 })
 
@@ -411,7 +426,27 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     logger.warning("chat_denied peer=%s email=%s room=%s reason=no_access", peer, authenticated_user["email"], current_group_id)
                     await send_error(writer, "You no longer have access to this group.")
                     continue
-                message_text = payload.get("msg", "")
+
+                # Handle encrypted messages
+                if payload.get("encrypted"):
+                    encryption_key = await database.get_group_encryption_key(current_group_id)
+                    if encryption_key:
+                        try:
+                            cipher = MessageEncryption.from_key_b64(encryption_key)
+                            message_text = cipher.decrypt(
+                                payload["nonce"],
+                                payload["ciphertext"]
+                            )
+                        except Exception:
+                            logger.warning("chat_denied peer=%s email=%s room=%s reason=decryption_failed", peer, authenticated_user["email"], current_group_id)
+                            await send_error(writer, "Message decryption failed")
+                            continue
+                    else:
+                        logger.warning("chat_denied peer=%s email=%s room=%s reason=no_encryption_key", peer, authenticated_user["email"], current_group_id)
+                        await send_error(writer, "Group encryption key not found")
+                        continue
+                else:
+                    message_text = payload.get("msg", "")
 
                 # Validate message
                 valid_msg, msg_error = validate_message(message_text)
@@ -573,20 +608,33 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 async def main():
     # --- NEW: Boot up the File Server in the background ---
-    print("🚀 Launching File Server on Port 8889...")
+    print("[FILE] Launching File Server on Port 8889...")
     subprocess.Popen([sys.executable, "file_server.py"])
     # ------------------------------------------------------
 
     # --- NEWER: Boot up the Video Signaling Server ---
-    print("🎥 Launching Video Server on Port 8890...")
+    print("[VIDEO] Launching Video Server on Port 8890...")
     subprocess.Popen([sys.executable, "video_server.py"])
     # ------------------------------------------------------
 
     await database.init_db()  # Ensure tables exist before server boots
 
-    # Start the main Chat Server
-    server = await asyncio.start_server(handle_client, SERVER_BIND_HOST, CHAT_PORT)
-    print("🟢 Main Chat Server is running on Port 8888...")
+    # Create SSL context for TLS encryption
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    cert_dir = Path(__file__).parent / "certs"
+    ssl_context.load_cert_chain(
+        certfile=cert_dir / "server.crt",
+        keyfile=cert_dir / "server.key"
+    )
+
+    # Start the main Chat Server with TLS
+    server = await asyncio.start_server(
+        handle_client,
+        SERVER_BIND_HOST,
+        CHAT_PORT,
+        ssl=ssl_context
+    )
+    print("[OK] Main Chat Server is running on Port 8888 (TLS enabled)...")
 
     async with server:
         await server.serve_forever()

@@ -1,5 +1,7 @@
 import asyncio
 import os
+import ssl
+from pathlib import Path
 import protocol
 from attachment_security import validate_attachment_filename
 from config import FILE_PORT, MAX_UPLOAD_FILE_SIZE, SERVER_BIND_HOST
@@ -112,11 +114,19 @@ async def main():
     # Initialize the Semaphore inside the active asyncio loop
     transfer_limiter = asyncio.Semaphore(10)
 
-    server = await asyncio.start_server(handle_file_transfer, HOST, PORT)
-    logger.info("file_server_started host=%s port=%s upload_dir=%s limit=%s", HOST, PORT, os.path.abspath(UPLOAD_DIR), 10)
-    print(f"🚀 VCP Raw TCP File Server is running on {HOST}:{PORT}")
-    print(f"📁 Saving files to: {os.path.abspath(UPLOAD_DIR)}")
-    print(f"🚦 Connection limit: 10 concurrent transfers")
+    # Create SSL context for TLS encryption
+    ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    cert_dir = Path(__file__).parent / "certs"
+    ssl_context.load_cert_chain(
+        certfile=cert_dir / "server.crt",
+        keyfile=cert_dir / "server.key"
+    )
+
+    server = await asyncio.start_server(handle_file_transfer, HOST, PORT, ssl=ssl_context)
+    logger.info("file_server_started host=%s port=%s upload_dir=%s limit=%s tls=enabled", HOST, PORT, os.path.abspath(UPLOAD_DIR), 10)
+    print(f"[OK] VCP Raw TCP File Server is running on {HOST}:{PORT} (TLS enabled)")
+    print(f"[FILES] Saving files to: {os.path.abspath(UPLOAD_DIR)}")
+    print(f"[LIMIT] Connection limit: 10 concurrent transfers")
     print("-" * 50)
 
     async with server:
