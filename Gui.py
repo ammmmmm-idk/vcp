@@ -1,3 +1,20 @@
+"""
+VCP Main GUI Application
+=========================
+PyQt6-based graphical user interface for the VCP chat application.
+
+Features:
+- Multi-group chat interface
+- Real-time message display
+- File attachment support (images, documents)
+- Video/audio calling UI
+- AI assistant integration
+- User list display
+- Dark theme
+
+Main Window: VCPApp class
+Entry point: Connects client.py to UI components
+"""
 # Save as: Gui.py
 from PyQt6.QtWidgets import QMainWindow, QStackedWidget
 from styles import VCPStyles

@@ -1,3 +1,18 @@
+"""
+VCP Video Call UI
+=================
+Video/audio call interface with WebRTC integration.
+
+Features:
+- Local and remote video display
+- Audio controls (mute/unmute)
+- Video controls (camera on/off)
+- Call transcription display
+- AI summary generation
+- End call button
+
+Integrates with: webrtc_thread, media_engine
+"""
 import math
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot

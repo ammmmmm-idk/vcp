@@ -1,3 +1,15 @@
+"""
+VCP Email Service
+=================
+Sends transactional emails (OTP codes) using SMTP.
+
+Configuration:
+- SMTP server from environment variables
+- TLS-encrypted email delivery
+- HTML email templates
+
+Used by: auth_service for OTP delivery
+"""
 import os
 import smtplib
 from email.mime.text import MIMEText

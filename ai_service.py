@@ -1,3 +1,18 @@
+"""
+VCP AI Service
+==============
+AI assistant integration using Groq API.
+
+Features:
+- Multi-turn conversation history
+- Context-aware responses
+- Message history management (24 messages)
+- Streaming responses (optional)
+- Error handling and retries
+
+Model: Groq LLaMA models
+API: Groq Cloud API
+"""
 import asyncio
 import os
 import re

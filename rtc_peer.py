@@ -1,3 +1,16 @@
+"""
+VCP RTC Peer Connection
+========================
+WebRTC peer connection wrapper for video/audio calls.
+
+Manages:
+- aiortc RTCPeerConnection
+- Media tracks (audio/video)
+- Data channels
+- Connection state
+
+Integrates with: media_engine for A/V sources
+"""
 import asyncio
 
 from aiortc import RTCConfiguration, RTCIceServer, RTCSessionDescription, RTCPeerConnection

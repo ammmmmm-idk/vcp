@@ -1,3 +1,17 @@
+"""
+VCP Video Signaling Server
+===========================
+WebRTC signaling server for peer-to-peer video/audio calls.
+
+Handles:
+- Peer connection signaling (SDP offers/answers)
+- ICE candidate exchange
+- Room management for video calls
+- Peer notifications
+
+Port: 8890 (TLS)
+Protocol: Custom JSON over TCP
+"""
 # Save as: video_server.py
 import asyncio
 import ssl

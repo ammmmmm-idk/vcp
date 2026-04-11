@@ -1,3 +1,13 @@
+"""
+VCP Signaling Client
+====================
+Client-side WebRTC signaling for video/audio calls.
+
+Wraps TCP connection to signaling server with protocol encoding/decoding.
+Used by webrtc_thread for establishing peer connections.
+
+Connects to: port 8890 (TLS)
+"""
 # Save as: signaling.py
 import asyncio
 import ssl

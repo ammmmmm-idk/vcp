@@ -1,3 +1,15 @@
+"""
+VCP Environment Loader
+======================
+Loads environment variables from .env file using python-dotenv.
+
+Variables:
+- Email credentials (SMTP)
+- API keys (Groq AI, Search)
+- Server configuration
+
+Used by: All services that need configuration
+"""
 import os
 from pathlib import Path
 

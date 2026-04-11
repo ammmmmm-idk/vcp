@@ -1,4 +1,15 @@
-# Save as: client.py
+"""
+VCP Network Client
+==================
+Handles all network communication between the GUI and the chat server.
+Features:
+- TLS-encrypted connection to chat server (port 8888)
+- End-to-end message encryption/decryption
+- Asynchronous message sending and receiving
+- PyQt signals for GUI updates
+- Session management
+- Heartbeat for connection monitoring
+"""
 import sys
 import asyncio
 import uuid
@@ -15,6 +26,16 @@ from message_encryption import MessageEncryption
 
 
 class NetworkClient(QObject):
+    """
+    Network client that manages TCP connection to chat server.
+
+    Signals:
+        message_received: Emits received messages to GUI
+        connection_status: Emits connection status changes
+        user_list_received: Emits list of users in current room
+
+    Handles message encryption/decryption and maintains encryption keys per group.
+    """
     # --- PyQt Signals (The Bridge to the GUI) ---
     message_received = pyqtSignal(dict)
     connection_status = pyqtSignal(str, str)

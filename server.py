@@ -1,3 +1,18 @@
+"""
+VCP Main Chat Server
+====================
+Main TCP server that handles:
+- User authentication (signup/login with OTP)
+- Real-time chat messaging with end-to-end encryption
+- Group management (create, join, leave, rename)
+- File upload notifications
+- AI assistant chat integration
+- Session management with hashed tokens
+- Rate limiting and input validation
+- TLS encryption for all connections
+
+Port: 8888 (TLS)
+"""
 import asyncio
 from collections import defaultdict, deque
 import subprocess

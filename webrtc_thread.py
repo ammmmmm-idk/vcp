@@ -1,3 +1,18 @@
+"""
+VCP WebRTC Thread Manager
+==========================
+Manages WebRTC peer-to-peer connections in a separate thread.
+
+Handles:
+- Video/audio capture and streaming
+- Peer connection establishment
+- ICE candidate exchange
+- SDP offer/answer negotiation
+- Media track management
+
+Uses: aiortc library for WebRTC implementation
+Thread-safe: Runs in separate thread from GUI
+"""
 import asyncio
 
 from PyQt6.QtCore import QThread

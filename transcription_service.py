@@ -1,3 +1,18 @@
+"""
+VCP Transcription Service
+==========================
+Audio transcription using Groq Whisper API.
+
+Features:
+- Real-time audio transcription
+- WAV format conversion
+- Multi-language support (auto-detect)
+- Error handling
+
+Model: Whisper large-v3
+Input: WAV audio data
+Output: Transcribed text
+"""
 import asyncio
 import io
 import os

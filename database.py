@@ -1,3 +1,19 @@
+"""
+VCP Database Module
+===================
+Handles all database operations for the VCP application.
+Uses aiosqlite for async SQLite operations.
+
+Features:
+- User management (creation, authentication)
+- Group management (create, join, leave, ownership)
+- Message history storage with encryption at rest
+- Session token management with SHA-256 hashing
+- AI chat history storage
+- OTP management with TTL
+
+Database: vcp_local.db
+"""
 import aiosqlite
 import hashlib
 import os

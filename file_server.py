@@ -1,3 +1,18 @@
+"""
+VCP File Transfer Server
+=========================
+Dedicated TCP server for file uploads and downloads.
+
+Features:
+- Chunked file transfer (8KB chunks)
+- Concurrent transfer limiting (max 10)
+- File size validation
+- Filename sanitization
+- TLS encryption
+
+Port: 8889 (TLS)
+Upload directory: vcp_uploads/
+"""
 import asyncio
 import os
 import ssl

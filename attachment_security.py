@@ -1,3 +1,16 @@
+"""
+VCP Attachment Security
+========================
+Validates file attachments for security.
+
+Checks:
+- File extension whitelist
+- Filename length limits
+- Path traversal prevention
+- Special character filtering
+
+Prevents: Malicious file uploads, directory traversal attacks
+"""
 import os
 import re
 

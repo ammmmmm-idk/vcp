@@ -1,3 +1,17 @@
+"""
+VCP Dialog Windows
+==================
+Reusable dialog components for the VCP application.
+
+Dialogs:
+- File download location picker
+- Group creation dialog
+- Join group dialog
+- Confirmation dialogs
+- Error message dialogs
+
+All dialogs use consistent styling and validation.
+"""
 # Save as: ui_dialogs.py
 import os
 from PyQt6.QtWidgets import (

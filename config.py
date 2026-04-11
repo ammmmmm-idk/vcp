@@ -1,3 +1,11 @@
+"""
+VCP Configuration
+=================
+Central configuration file for all VCP components.
+Contains server addresses, ports, limits, and feature flags.
+
+Environment variables are loaded via env_loader.py
+"""
 import os
 
 from env_loader import load_env_file

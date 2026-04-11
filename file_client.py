@@ -1,3 +1,17 @@
+"""
+VCP File Transfer Client
+=========================
+Client-side file upload and download functionality.
+
+Features:
+- Chunked file transfer (8KB chunks)
+- TLS-encrypted connection to file server
+- Local file caching (VCP_Cache/)
+- Progress tracking
+- Filename validation
+
+Connects to: port 8889 (TLS)
+"""
 import asyncio
 import os
 import ssl

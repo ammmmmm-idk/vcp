@@ -1,3 +1,16 @@
+"""
+VCP Call AI State
+=================
+Manages AI state during video calls.
+
+Tracks:
+- Call transcription buffer
+- AI summary generation
+- Transcription history
+- Call state
+
+Used by: ui_video for call transcription and AI summaries
+"""
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime

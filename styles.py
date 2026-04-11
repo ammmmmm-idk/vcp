@@ -1,3 +1,17 @@
+"""
+VCP UI Styles
+=============
+Centralized stylesheet definitions for consistent UI theming.
+
+Theme: Dark mode
+Colors:
+- Background: Dark grays (#0F1117, #1A202C)
+- Accent: Blues (#3B82F6, #63B3ED)
+- Text: Light gray (#E2E8F0)
+- Borders: Subtle grays
+
+Styles: Buttons, inputs, text areas, scrollbars, containers
+"""
 # Save as: styles.py
 
 class VCPStyles:

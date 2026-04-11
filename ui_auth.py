@@ -1,3 +1,20 @@
+"""
+VCP Authentication UI
+=====================
+Login and signup interface with OTP verification.
+
+Screens:
+1. Landing (signup/login choice)
+2. Signup form (name, email, password)
+3. Login form (email, password)  
+4. OTP verification (6-digit code)
+
+Features:
+- Password strength requirements
+- OTP email delivery
+- Session token management
+- Input validation
+"""
 # Save as: ui_auth.py
 
 from PyQt6.QtWidgets import (

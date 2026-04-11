@@ -1,3 +1,20 @@
+"""
+VCP Media Engine
+================
+Audio/video capture and processing for WebRTC calls.
+
+Features:
+- Microphone audio capture
+- Camera video capture
+- Audio level monitoring
+- Transcription integration (Groq Whisper)
+- Silence detection
+- Multi-user audio mixing
+
+Video: 640x480 @ 30fps
+Audio: 48kHz stereo
+Transcription threshold: 100 (audio level)
+"""
 import asyncio
 import fractions
 import queue

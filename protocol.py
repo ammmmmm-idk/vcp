@@ -1,3 +1,12 @@
+"""
+VCP Protocol Module
+===================
+Handles message serialization/deserialization for network communication.
+Uses length-prefixed JSON protocol for reliable message framing over TCP.
+
+Message format: [4-byte length][JSON payload]
+Supports both regular messages and file transfer headers.
+"""
 import struct
 import json
 import asyncio

@@ -1,3 +1,18 @@
+"""
+VCP Input Validation Module
+============================
+Provides comprehensive input validation and sanitization for all user inputs.
+
+Validates:
+- Email addresses (format, length)
+- Usernames (length, characters)
+- Group names (length, allowed characters)
+- Messages (length, special characters)
+- Passwords (strength requirements)
+- AI prompts (injection prevention)
+
+All validators return (is_valid, error_message) tuples.
+"""
 # Save as: validators.py
 """Input validation functions for VCP security"""
 import re

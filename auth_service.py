@@ -1,3 +1,20 @@
+"""
+VCP Authentication Service
+===========================
+Handles user authentication with OTP (One-Time Password) system.
+
+Features:
+- OTP generation (6-digit codes)
+- OTP expiration (5-minute TTL)
+- Email delivery via email_service
+- Password hashing with Argon2
+- Password verification
+
+Security:
+- Argon2id for password hashing
+- Time-based OTP expiration
+- Secure random OTP generation
+"""
 import time
 import secrets
 import asyncio

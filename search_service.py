@@ -1,3 +1,17 @@
+"""
+VCP Search Service
+==================
+Web search integration for AI assistant.
+
+Provider: Tavily API
+Features:
+- Web search queries
+- Result summarization
+- Context integration for AI
+- Rate limiting
+
+Used by: AI assistant for web-augmented responses
+"""
 import asyncio
 import os
 from typing import Any

@@ -1,3 +1,18 @@
+"""
+VCP Portal UI
+=============
+Group selection and management interface.
+
+Features:
+- Group list display
+- Create new group
+- Join existing group
+- Leave group
+- Rename group (owner only)
+- Group ownership management
+
+Shows user's groups and allows navigation to chat.
+"""
 # Save as: ui_portal.py
 import os
 import asyncio
