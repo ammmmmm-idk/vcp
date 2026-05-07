@@ -26,6 +26,7 @@ from qasync import asyncSlot
 
 import asyncio
 import ssl
+from pathlib import Path
 import protocol
 from config import SERVER_HOST, CHAT_PORT
 
@@ -218,10 +219,12 @@ class AuthWidget(QWidget):
     async def _send_auth_request(self, payload: dict):
         writer = None
         try:
-            # Create SSL context that doesn't verify self-signed certificates
+            # Create SSL context with CA certificate verification
             ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+            ca_file = Path(__file__).parent / "certs" / "rootCA.crt"
+            ssl_context.load_verify_locations(cafile=str(ca_file))
+            ssl_context.check_hostname = False  # localhost doesn't match hostname
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
 
             reader, writer = await asyncio.open_connection(
                 SERVER_HOST, CHAT_PORT, ssl=ssl_context

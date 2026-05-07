@@ -14,6 +14,7 @@ import sys
 import asyncio
 import uuid
 import ssl
+from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 from qasync import QEventLoop
@@ -62,10 +63,12 @@ class NetworkClient(QObject):
         self.disconnect()
 
         try:
-            # Create SSL context that doesn't verify self-signed certificates
+            # Create SSL context with CA certificate verification
             ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+            ca_file = Path(__file__).parent / "certs" / "rootCA.crt"
+            ssl_context.load_verify_locations(cafile=str(ca_file))
+            ssl_context.check_hostname = False  # localhost doesn't match hostname
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
 
             self.reader, self.writer = await asyncio.open_connection(
                 host, port, ssl=ssl_context
@@ -220,10 +223,12 @@ class NetworkClient(QObject):
 
         writer = None
         try:
-            # Create SSL context that doesn't verify self-signed certificates
+            # Create SSL context with CA certificate verification
             ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+            ca_file = Path(__file__).parent / "certs" / "rootCA.crt"
+            ssl_context.load_verify_locations(cafile=str(ca_file))
+            ssl_context.check_hostname = False  # localhost doesn't match hostname
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
 
             reader, writer = await asyncio.open_connection(host, port, ssl=ssl_context)
             await protocol.send_message(writer, {

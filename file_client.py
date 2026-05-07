@@ -15,6 +15,7 @@ Connects to: port 8889 (TLS)
 import asyncio
 import os
 import ssl
+from pathlib import Path
 import protocol
 from attachment_security import validate_attachment_filename
 from config import MAX_UPLOAD_FILE_SIZE, SERVER_HOST, FILE_PORT
@@ -49,10 +50,12 @@ async def upload_file(file_path: str) -> bool:
         return False
 
     try:
-        # Create SSL context that doesn't verify self-signed certificates
+        # Create SSL context with CA certificate verification
         ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        ca_file = Path(__file__).parent / "certs" / "rootCA.crt"
+        ssl_context.load_verify_locations(cafile=str(ca_file))
+        ssl_context.check_hostname = False  # localhost doesn't match hostname
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
 
         reader, writer = await asyncio.open_connection(HOST, PORT, ssl=ssl_context)
         print(f"[*] Connected to File Server. Uploading: {filename}...")
@@ -109,10 +112,12 @@ async def download_file(filename: str, destination: str = None) -> str:
 
     writer = None
     try:
-        # Create SSL context that doesn't verify self-signed certificates
+        # Create SSL context with CA certificate verification
         ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        ca_file = Path(__file__).parent / "certs" / "rootCA.crt"
+        ssl_context.load_verify_locations(cafile=str(ca_file))
+        ssl_context.check_hostname = False  # localhost doesn't match hostname
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
 
         reader, writer = await asyncio.open_connection(HOST, PORT, ssl=ssl_context)
         print(f"[*] Connected to File Server. Requesting: {safe_filename}...")
