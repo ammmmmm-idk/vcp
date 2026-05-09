@@ -25,11 +25,12 @@ THREAD_JOIN_TIMEOUT_MS = 3000
 
 
 class WebRTCClientThread(QThread):
-    def __init__(self, host, port, username, group_id, signal_emitter, device_preferences=None, transcript_callback=None):
+    def __init__(self, host, port, username, user_id, group_id, signal_emitter, device_preferences=None, transcript_callback=None):
         super().__init__()
         self.host = host
         self.port = port
         self.username = username
+        self.user_id = user_id
         self.group_id = group_id
         self.signal_emitter = signal_emitter
         self.device_preferences = device_preferences or {}
@@ -57,6 +58,7 @@ class WebRTCClientThread(QThread):
             self.peer_manager = MultiPeerManager(
                 self.signaling,
                 self.username,
+                self.user_id,
                 self.signal_emitter,
                 self.device_preferences,
                 transcript_callback=self.transcript_callback,
@@ -65,6 +67,7 @@ class WebRTCClientThread(QThread):
             await self.signaling.send_data({
                 "type": "join",
                 "username": self.username,
+                "user_id": self.user_id,
                 "group_id": self.group_id,
             })
 
@@ -76,15 +79,30 @@ class WebRTCClientThread(QThread):
                 msg_type = message.get("type")
 
                 if msg_type == "new_peer":
-                    await self.peer_manager.initiate_call_to(message["username"])
+                    await self.peer_manager.initiate_call_to(
+                        message.get("user_id"),
+                        message.get("username")
+                    )
                 elif msg_type == "offer":
-                    await self.peer_manager.handle_incoming_offer(message["sender"], message["sdp"])
+                    await self.peer_manager.handle_incoming_offer(
+                        message["sender"],
+                        message["sdp"],
+                        sender_display_name=message.get("sender_name"),
+                    )
                 elif msg_type == "answer":
-                    await self.peer_manager.handle_incoming_answer(message["sender"], message["sdp"])
+                    await self.peer_manager.handle_incoming_answer(
+                        message["sender"],
+                        message["sdp"],
+                        sender_display_name=message.get("sender_name"),
+                    )
                 elif msg_type == "candidate":
-                    await self.peer_manager.handle_ice_candidate(message["sender"], message["candidate"])
+                    await self.peer_manager.handle_ice_candidate(
+                        message["sender"],
+                        message["candidate"],
+                        sender_display_name=message.get("sender_name"),
+                    )
                 elif msg_type == "peer_left":
-                    await self.peer_manager.handle_peer_left(message["username"])
+                    await self.peer_manager.handle_peer_left(message.get("user_id"))
 
         except Exception as e:
             print(f"WebRTC Thread disconnected: {e}")

@@ -913,6 +913,7 @@ class PortalWidget(QWidget):
             host=SERVER_HOST,
             port=VIDEO_SIGNALING_PORT,
             username=self.username,
+            user_id=(self.pending_email or self.username),
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals
         )
@@ -952,6 +953,7 @@ class PortalWidget(QWidget):
             host=SERVER_HOST,
             port=VIDEO_SIGNALING_PORT,
             username=self.username,
+            user_id=(self.pending_email or self.username),
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals,
             transcript_callback=self.video_window.signals.transcript_chunk.emit,
@@ -1024,6 +1026,7 @@ class PortalWidget(QWidget):
             host=SERVER_HOST,
             port=VIDEO_SIGNALING_PORT,
             username=self.username,
+            user_id=(self.pending_email or self.username),
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals,
             device_preferences=device_preferences,
@@ -1126,6 +1129,7 @@ class PortalWidget(QWidget):
             host=SERVER_HOST,
             port=VIDEO_SIGNALING_PORT,
             username=self.username,
+            user_id=(self.pending_email or self.username),
             group_id=self.active_group_id,
             signal_emitter=self.video_window.signals,
             device_preferences=device_preferences,
