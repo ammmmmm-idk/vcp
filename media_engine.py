@@ -196,6 +196,7 @@ class CameraStreamTrack(VideoStreamTrack):
                 if self.is_muted or not ret:
                     frame = build_blank_video_frame(self.local_username)
 
+                frame = cv2.flip(frame, 1)
                 rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 height, width, channels = rgb_image.shape
                 bytes_per_line = channels * width
@@ -482,6 +483,7 @@ async def display_stream(track, target_username, signal_emitter):
             frame = await track.recv()
             img = frame.to_ndarray(format=VIDEO_PIXEL_FORMAT)
 
+            img = cv2.flip(img, 1)
             rgb_image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             height, width, channels = rgb_image.shape
             bytes_per_line = channels * width
